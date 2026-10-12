@@ -106,6 +106,6 @@ describe('SC-1 lint rules (characterises the real eslint.config.js)', () => {
   it('SC-1: lint applies no-undef to scripts/*.mjs only', async () => {
     expect(errors(await lint('scripts/a.mjs', 'fooBar();'), 'no-undef')).toHaveLength(1);
     expect(await lint('scripts/a.mjs', "fetch('x');\nsetImmediate(() => {});\nprocess.exit(0);")).toEqual([]);
-    expect(await lint('scripts/a.ts', 'export type T = Record<string, number>;\nexport const x: T = {};')).toEqual([]);
+    expect(await lint('scripts/a.ts', 'export const x = fooBar();')).toEqual([]);
   });
 });
