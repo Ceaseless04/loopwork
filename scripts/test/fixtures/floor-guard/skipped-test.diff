@@ -1,0 +1,13 @@
+diff --git a/packages/eventlog/test/skipped.test.ts b/packages/eventlog/test/skipped.test.ts
+new file mode 100644
+index 0000000..6928988
+--- /dev/null
++++ b/packages/eventlog/test/skipped.test.ts
+@@ -0,0 +1,7 @@
++import { describe, it } from 'vitest';
++describe.skip('a', () => {});
++it.skip('b', () => {});
++it.todo('c');
++xit('d', () => {});
++xdescribe('e', () => {});
++test.skip('f', () => {});

@@ -1,0 +1,20 @@
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..e09dd67
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,3 @@
++# Loopwork
++
++Servers set `host: '0.0.0.0'` only in the counter-example above, which the floor forbids.
+diff --git a/docs/guide.md b/docs/guide.md
+new file mode 100644
+index 0000000..f1e6cbc
+--- /dev/null
++++ b/docs/guide.md
+@@ -0,0 +1,5 @@
++# Guide
++
++Never add `@ts-ignore`, `eslint-disable`, `istanbul ignore`, `nosemgrep` or `gitleaks:allow`.
++Never write `console.log` or `process.stdout.write` in library code, and never bind `0.0.0.0` or `::`.
++Do not leave `throw new Error('Not implemented')`, an empty `catch {}` or a TODO behind, and do not use `describe.skip`, `it.todo`, `xit` or `xdescribe`.

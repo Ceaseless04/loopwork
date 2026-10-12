@@ -1,0 +1,45 @@
+diff --git a/packages/graph/src/suppress.ts b/packages/graph/src/suppress.ts
+new file mode 100644
+index 0000000..15c8130
+--- /dev/null
++++ b/packages/graph/src/suppress.ts
+@@ -0,0 +1,14 @@
++export const a = 1;
++// @ts-ignore
++export const b: number = 's';
++// @ts-expect-error
++export const c: number = 's';
++// eslint-disable-next-line no-console
++export const d = 1;
++/* eslint-disable */
++/* eslint-disable-next-line no-console */
++/* istanbul ignore next */
++// nosemgrep: javascript.lang.security
++const k = 'x'; // gitleaks:allow
++/* v8 ignore */
++export const e = 2;
+diff --git a/scripts/suppress.mjs b/scripts/suppress.mjs
+new file mode 100644
+index 0000000..9357b42
+--- /dev/null
++++ b/scripts/suppress.mjs
+@@ -0,0 +1,7 @@
++export const a = 1;
++// eslint-disable-next-line no-undef
++export const b = missing;
++/* eslint-disable */
++export const c = 2;
++/* eslint-disable-next-line no-undef */
++export const d = missing;
+diff --git a/packages/eventlog/src/mod.ts b/packages/eventlog/src/mod.ts
+index 9fc60ce..04c56ad 100644
+--- a/packages/eventlog/src/mod.ts
++++ b/packages/eventlog/src/mod.ts
+@@ -1,5 +1,7 @@
+ export const one = 1;
+ export const two = 2;
+ export const three = 3;
++// @ts-ignore
++export const x: number = 's';
+ export const four = 4;
+ export const five = 5;

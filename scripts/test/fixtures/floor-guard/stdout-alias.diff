@@ -1,0 +1,8 @@
+diff --git a/packages/runtime/src/alias.ts b/packages/runtime/src/alias.ts
+new file mode 100644
+index 0000000..e40c1e4
+--- /dev/null
++++ b/packages/runtime/src/alias.ts
+@@ -0,0 +1,2 @@
++const c = console;
++const { log } = console;

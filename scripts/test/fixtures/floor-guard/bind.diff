@@ -1,0 +1,14 @@
+diff --git a/packages/ui-server/src/server.ts b/packages/ui-server/src/server.ts
+new file mode 100644
+index 0000000..12ccb00
+--- /dev/null
++++ b/packages/ui-server/src/server.ts
+@@ -0,0 +1,8 @@
++import { createServer } from 'node:http';
++const server = createServer();
++server.listen(7777, '0.0.0.0');
++server.listen(7778, '::');
++const a = { host: '0.0.0.0', port: 1 };
++const b = { host: '192.168.1.5', port: 2 };
++const c = { host: process.env.HOST, port: 3 };
++const d = { host: "::", port: 4 };
