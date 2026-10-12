@@ -377,7 +377,7 @@ describe('SC-2 floor-guard.sh against real git state', () => {
 });
 
 // Repair cycles 1 and 2 (T04): hardening against git configuration, hidden files and hunk shapes.
-describe('SC-2 floor-guard.sh repair 1', () => {
+describe('SC-2 floor-guard.sh repairs 1-2', () => {
   const IGNORE = `// @ts-${'ignore'}`;
   const baseOf = (repo: string): Record<string, string> => ({ LOOPWORK_BASE_REF: git(repo, 'rev-parse', 'HEAD') });
   const put = (repo: string, rel: string, body: string): void => {

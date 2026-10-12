@@ -20,7 +20,7 @@
 # Fails CLOSED: if git cannot build the diff (bad base ref, not a repo, git missing) or a path is C-quoted by git
 # (names with tab, newline, double quote or backslash), the exit is 2 with a `floor-guard: error: ...` line, never 0.
 # Exit 2 also covers usage errors. The guard's own diffs use --no-renames (a rename is a delete + an add, so it cannot
-# hide a CONSTRAINTS.md removal or a dropped *.test.ts), --text --no-textconv (attributes cannot hide a diff), -U3
+# hide a CONSTRAINTS.md removal or a dropped *.test.ts), --text --no-textconv (diff attributes cannot hide a diff), -U3
 # (diff.context cannot strip the Exceptions context; GIT_DIFF_OPTS is unset because it would override -U3) and
 # core.quotePath=false (café.ts reaches awk unquoted). Untracked files are added intent-to-add to a throwaway copy of the
 # index with --literal-pathspecs (a file named like pathspec magic cannot exclude another); the real index is never written.
@@ -50,6 +50,9 @@
 #   - core.splitIndex leaves a sharedindex.* file in .git (the throwaway index is a copy, the shared part is not);
 #   - GIT_DIR exported without GIT_WORK_TREE, run from a subdirectory: git takes the cwd as the worktree and every
 #     file reads as added or deleted (a flood of false positives; unset GIT_DIR or export both);
+#   - a clean filter (filter=<name> attribute plus a local filter.<name>.clean command) rewrites worktree content before the diff and can hide even committed lines; a fresh checkout without that config is the backstop;
+#   - uncommitted edits to files marked --assume-unchanged / --skip-worktree (or reported unchanged by a core.fsmonitor hook) are not seen; committed content still is;
+#   - gitignored files (.gitignore, core.excludesFile, info/exclude) are not scanned; with sparse-checkout, an untracked file outside the sparse set makes the guard exit 2;
 #   - when the base lacks CONSTRAINTS.md the whole new file is one zero-context hunk and fails constraints-weakened; the
 #     real flow always sets LOOPWORK_BASE_REF to a base that has it.
 set -euo pipefail
