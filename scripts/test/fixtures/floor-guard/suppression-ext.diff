@@ -1,0 +1,59 @@
+diff --git a/scripts/ext/a.tsx b/scripts/ext/a.tsx
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/scripts/ext/a.tsx
+@@ -0,0 +1,1 @@
++// @ts-ignore
+diff --git a/scripts/ext/b.js b/scripts/ext/b.js
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/scripts/ext/b.js
+@@ -0,0 +1,1 @@
++// @ts-ignore
+diff --git a/scripts/ext/c.cjs b/scripts/ext/c.cjs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/scripts/ext/c.cjs
+@@ -0,0 +1,1 @@
++// @ts-ignore
+diff --git a/scripts/ext/d.mts b/scripts/ext/d.mts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/scripts/ext/d.mts
+@@ -0,0 +1,1 @@
++// @ts-ignore
+diff --git a/scripts/ext/e.cts b/scripts/ext/e.cts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/scripts/ext/e.cts
+@@ -0,0 +1,1 @@
++// @ts-ignore
+diff --git a/scripts/ext/f.jsx b/scripts/ext/f.jsx
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/scripts/ext/f.jsx
+@@ -0,0 +1,1 @@
++// @ts-ignore
+diff --git a/scripts/ext/nocheck.ts b/scripts/ext/nocheck.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/scripts/ext/nocheck.ts
+@@ -0,0 +1,1 @@
++// @ts-nocheck
+diff --git a/scripts/ext/forms.ts b/scripts/ext/forms.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/scripts/ext/forms.ts
+@@ -0,0 +1,4 @@
++// @ts-expect-error:
++/* @ts-expect-error */
++/**
++ * eslint-disable-next-line no-console

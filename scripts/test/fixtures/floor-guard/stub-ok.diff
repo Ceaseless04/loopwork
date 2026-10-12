@@ -1,0 +1,14 @@
+diff --git a/packages/engine/src/ok.ts b/packages/engine/src/ok.ts
+new file mode 100644
+index 0000000..6295525
+--- /dev/null
++++ b/packages/engine/src/ok.ts
+@@ -0,0 +1,8 @@
++export function a(): void {
++  try { risky(); } catch (e) { log(e); }
++}
++export const s = 'eslint-disable and @ts-ignore and TODO are only words here';
++export const t = "TODO";
++it('handles TODO, FIXME and @ts-ignore in a title', () => {});
++throw new Error('boom');
++export const u = `${a} FIXME`;
