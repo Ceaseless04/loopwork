@@ -1,0 +1,172 @@
+# Spec: engine-core (`@loopwork/engine`)
+
+Depends on: `graph-model`, `event-log`. Inherits [repo-wide conventions](CAPABILITY-MAP.md#repo-wide-conventions-every-module-spec-inherits-these).
+
+## Objective
+
+Execute a validated `Flow` in-process against any `EventStore`: streaming items, real concurrency, backpressure,
+frame semantics (`foreach`, `while`/`until`, `retry`), mandatory-budget enforcement, and **resume from a log**.
+It does not know about queues, leases, processes, CLIs or HTTP.
+
+Success: the semantics below hold identically on the in-memory store (fast tests) and Postgres (durable runs).
+
+## Tech Stack
+
+TypeScript, `node:*` only. No runtime dependencies beyond the sibling packages.
+
+## Commands
+
+```
+pnpm --filter @loopwork/engine test
+pnpm --filter @loopwork/engine bench:stream      # 100k-item in-memory run, prints heap + throughput
+```
+
+## Project Structure
+
+```
+packages/engine/
+  src/execute.ts        executeRun(opts): Promise<RunOutcome>
+  src/registry.ts       NodeRegistry, built-in registration
+  src/builtins.ts       createBuiltins(): NodeRegistry
+  src/channel.ts        bounded async channel (backpressure)
+  src/scheduler.ts      per-node worker pool, global in-flight cap
+  src/frames/{foreach,while,retry}.ts
+  src/recorder.ts       batching event writer (flush by count/time)
+  src/resume.ts         derives work to redo from RunState
+  test/
+```
+
+## Contract
+
+```ts
+type NodeRegistry = {
+  source(name: string, fn: SourceFn): void;       // (ctx, params) => AsyncIterable<JsonValue>
+  map(name: string, fn: MapFn): void;             // (item, ctx, params) => Promise<JsonValue | JsonValue[]>   (array = fan-out on `out`)
+  sink(name: string, fn: SinkFn): void;           // (item, ctx, params) => Promise<void>
+  predicate(name: string, fn: PredicateFn): void; // (state, ctx, params) => Promise<boolean>   for while/until conditions
+  has(kind, name): boolean;  names(kind): string[];
+};
+type StepContext = {
+  runId: string; node: string; itemId: string; attempt: number; signal: AbortSignal;
+  idempotencyKey: string;            // `${runId}/${node}/${itemId}`; stable across attempts and resumes
+  input: JsonValue | undefined;      // run input (sources only)
+  now(): number;                     // logged via SideEffect on first call; replayed on re-execution
+  random(): number;                  // same
+};
+type ExecuteOptions = {
+  runId: string; store: EventStore; registry: NodeRegistry; signal: AbortSignal;
+  expectedSeq: number;               // the run's lastSeq when this executor took over
+  channelCapacity?: number;          // default 64 items per edge
+  maxInFlight?: number;              // global cap on concurrently executing steps, default 64
+  flush?: { maxEvents: number; maxMs: number };   // default { 500, 50 }
+};
+type RunOutcome =
+  | { status: 'succeeded' } | { status: 'failed'; reason: 'step'|'budget'|'internal'; message: string; node?: string }
+  | { status: 'cancelled' } | { status: 'fenced' };   // fenced = SeqConflictError: another executor owns the run; stop quietly
+executeRun(opts: ExecuteOptions): Promise<RunOutcome>
+```
+`executeRun` reads the existing log, folds it, and drives the flow to a terminal event. A run with no prior
+`RunStarted` is simply attempt 1. The caller (durable-runtime) owns leases and passes `expectedSeq`.
+
+### Built-ins (`createBuiltins()`)
+
+Needed by tests, the exit gate, the GUI's demo flows and `loopwork init`'s sample flow:
+`source: range{count,start?}`, `source: fromInput` (emits the elements of the run input array), `source: fromFile{path}` (NDJSON);
+`map: identity`, `map: sleep{ms}`, `map: tag{key,value}`, `map: failEvery{n,message}` (deterministic failure injection), `map: increment{by}`;
+`sink: discard`, `sink: logLine`, `sink: pgIdempotent{table}` (inserts `idempotencyKey` with `ON CONFLICT DO NOTHING`; used by the exit gate; needs the Postgres pool passed through `registerBuiltins({ pool })`, absent for in-memory tests);
+`predicate: lessThan{path,value}`, `predicate: truthy{path}`.
+
+## Semantics
+
+**Streaming.** Each edge is a bounded channel. A producer awaits when the channel is full (backpressure), so a
+slow sink stalls the source instead of buffering unboundedly. Every `map`/`sink` node runs up to `concurrency`
+steps at once (default 1), and all nodes together never exceed `maxInFlight`. Output order is **completion
+order**, not input order; lineage is carried in `itemId`. A run over 100k items must run in constant memory
+regardless of item count.
+
+**Steps.** `StepStarted` → call `fn` → `StepSucceeded{outputs}` or `StepFailed`. A step is *committed* only when its
+`StepSucceeded` is flushed to the store. Anything not in the log is treated as not done.
+
+**ForEach.** For each item arriving on `in`, run `body` once with that item (up to `concurrency` bodies at once).
+Each started body is one iteration. Body output items go to `out`. Frame exits `input-done` when `in` is closed
+and all bodies are done.
+
+**While/Until.** Item on `in` is the initial *state*. Loop: evaluate `condition(state)`; `while` runs the body
+while it is true, `until` runs the body until it is true (condition checked **after** each iteration for `until`,
+**before** for `while`); the body's `out` item becomes the next state. Emits the final state on `out`, exit
+`condition`. Iteration counts against `maxIterations`.
+
+**Retry.** Run `body` on the item; on step failure retry up to `maxAttempts` total with `backoff`
+(`fixed`: `baseMs`; `exponential`: `baseMs * 2^(attempt-1)`, capped at 60 s). Success exits `success`. On
+exhaustion exit `retries-exhausted`: `fail-run` ends the run `failed{reason:'step'}`; `emit-error` emits
+`{ message, item }` on the frame's `error` port and continues. Plain (non-frame) steps never retry: a failing
+step fails the run unless it is inside a `retry` frame.
+
+**Budgets.** `maxIterations` is counted per frame **instance** (per `in` item). `maxDurationMs` is the frame instance's
+wall time, accumulated from logged `IterationEnded.elapsedMs` so it survives resume. On breach: append
+`BudgetExceeded`, abort that frame's in-flight steps through their `signal`, and end the run
+`failed{reason:'budget'}`.
+
+**Cancellation.** When `opts.signal` aborts: stop scheduling, abort in-flight steps, flush, append `RunCancelled`,
+return `cancelled`. Steps that ignore the signal are not awaited past a 5 s grace.
+
+**Determinism.** A step's `fn` may be re-run after a crash. Time and randomness must come from `ctx.now()` /
+`ctx.random()`, which are logged as `SideEffect` on the first execution and returned from the log on re-execution.
+Anything else a step does is its own responsibility; it receives a stable `idempotencyKey` for that purpose.
+Guarantee: **at-least-once per step execution, exactly-once per committed step in the log.**
+
+**Resume.** On start, fold the log, then: committed steps are never re-executed (their logged outputs are
+re-injected downstream); steps `inFlight` (started, not committed) re-run with `attempt+1`; sources are re-invoked
+and the first `emitted` items are skipped (sources **must be deterministic given `params` and run input**; the
+engine verifies by hashing the skipped items against the logged `ItemEmitted` values and fails the run with
+`internal` on mismatch); frames re-enter at the logged iteration. A frame whose budget was breached is not resumable.
+
+**Recording.** Events are buffered and flushed when `maxEvents` or `maxMs` is reached, and always before: a sink
+step reports success, a terminal event, returning from `executeRun`. `append` uses `expectedSeq`; on
+`SeqConflictError` the executor stops all work and returns `fenced`.
+
+## Code Style
+
+```ts
+export async function runStep(ctx: StepCtx, item: Item): Promise<StepResult> {
+  rec.push({ type: 'StepStarted', node: ctx.node, itemId: item.id, attempt });
+  try { const out = await fn(item.value, stepContext, params); return commit(item, out); }
+  catch (error) { return fail(item, error, attempt); }   // classification (retry frame vs. fail run) happens in the caller
+}
+```
+
+## Testing Strategy
+
+Almost everything runs on `MemoryStore` with built-ins and virtual time (`vitest` fake timers where a test needs
+`sleep`/backoff). Resume tests build a partial log by running the engine, aborting at a chosen event count, then
+calling `executeRun` again on the same store. `*.pg.test.ts`: one smoke test per frame kind on Postgres.
+`bench:stream` is a script (not in CI by default) and prints peak heap.
+
+## Boundaries
+
+- Always: keep `executeRun` free of process/queue concerns; every state change is an event; surface `fenced` rather than retrying a conflict.
+- Ask first: adding a node kind or frame kind (needs `graph-model` first); changing completion-order semantics to ordered.
+- Never: swallow a step error without an event; mutate the `Flow`; read the wall clock or `Math.random` in engine code paths that a step's logged outcome depends on; let a channel grow unbounded.
+
+## Success Criteria
+
+- **EC-1** A `source → map → sink` flow processes N items; `StepSucceeded` count equals N for each node; run `succeeded`.
+- **EC-2** Backpressure: with a sink slower than the source, the source's emitted-minus-consumed gap never exceeds `channelCapacity + concurrency`; a 100k-item in-memory run completes with `--max-old-space-size=256`.
+- **EC-3** Concurrency: a node with `concurrency: k` never has more than `k` steps in flight, and reaches `k` when work is available; `maxInFlight` caps the total across nodes.
+- **EC-4** `foreach` runs one iteration per input item with the configured body concurrency, and `FrameExited{input-done}` is emitted once.
+- **EC-5** `while`/`until` iterate to the condition and emit the final state; `until` always runs the body at least once, `while` may run it zero times.
+- **EC-6** A `while` whose condition never becomes false ends `failed{reason:'budget'}` with a `BudgetExceeded{budget:'iterations'}` event, and does not hang.
+- **EC-7** A frame exceeding `maxDurationMs` ends `failed{budget}` with `BudgetExceeded{budget:'time'}`; in-flight step signals are aborted.
+- **EC-8** `retry` succeeds on attempt k after k-1 failures with the specified backoff delays; exhaustion either fails the run or emits on `error` per `onExhausted`.
+- **EC-9** A failing step outside a `retry` frame fails the run with `reason:'step'` and the node id; its `StepFailed` is in the log.
+- **EC-10** **Resume equivalence:** for every abort point in a randomized set (including mid-flush), resuming yields the same final `StepSucceeded` set, exactly one per `(node,itemId)`, as an uninterrupted run, and a gapless `seq`.
+- **EC-11** `ctx.now()`/`ctx.random()` return identical values on re-execution after resume (asserted with a step that records them).
+- **EC-12** Resuming with a non-deterministic source (items change) fails the run with `internal` and a message naming the source, rather than producing silent wrong output.
+- **EC-13** Aborting `signal` produces `RunCancelled`, no events after it, and `executeRun` returns within the 5 s grace even if a step ignores its signal.
+- **EC-14** A second executor appending with a stale `expectedSeq` makes the first return `fenced` and stop issuing steps.
+- **EC-15** Nested frames (`foreach` containing `retry` containing `while`) execute and resume correctly.
+
+## Open Questions
+
+Ordered output (preserve input order through a node) is not provided; add as a node option when a flow needs it.
+Per-item `Map-Reduce` and `Paginate` frames are Phase 3+.

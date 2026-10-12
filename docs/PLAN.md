@@ -33,11 +33,16 @@
 - TypeScript monorepo; Node engine; React + React Flow (xyflow).
 - Postgres for event log and queue (`SKIP LOCKED`); Redis only if throughput demands.
 - Code steps in isolated-vm or a Deno subprocess. Multiplayer (Yjs) later.
+- MCP (`@modelcontextprotocol/sdk`, stdio) for Claude Desktop; Claude Code plugin for `/loopwork`.
 
 ## Phases
-1. **Engine MVP** - typed graph, ForEach/While/Retry frames, streaming, event log, CLI runner.
-   Exit: 100k-item loop with concurrency limit completes and survives `kill -9` mid-run.
-2. **Canvas** - frames, live edges, auto-layout, command palette, `.flow.ts` sync.
+1. **Engine MVP** - typed graph, ForEach/While/Retry frames, streaming, event log, CLI runner,
+   plus front doors: `loopwork` CLI, an interactive GUI (start, watch, resume, cancel runs; graph editing is Phase 2), `/loopwork` Claude Code
+   command (opens a new terminal window and a GUI window), and an MCP server for Claude Desktop. See
+   [CAPABILITY-MAP.md](../CAPABILITY-MAP.md) and ADR 0003.
+   Exit: 100k-item loop with concurrency limit completes and survives `kill -9` mid-run,
+   driven from the CLI and from an MCP client, and visible live in the GUI.
+2. **Canvas** - make the Phase 1 viewer editable: frames, live edges, auto-layout, command palette, `.flow.ts` sync.
 3. **Debugging** - loop scrubber, replay/fork-from-step, iteration-precise errors.
 4. **AI** - `Agent` frame with token/cost budgets, MCP tools, human approval, evals on replayed logs.
 5. **Teams** - versioned subgraph packages, multiplayer, RBAC, self-host + cloud.
