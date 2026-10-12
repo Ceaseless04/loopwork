@@ -13,7 +13,7 @@
 // The .mjs modules are loaded with a dynamic import and typed here, so this file typechecks (no allowJs) and fails with
 // "cannot find module" until they exist. Real git runs only in temp repos under os.tmpdir() with every GIT_* variable
 // stripped (a git hook would otherwise leak GIT_INDEX_FILE into the children).
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -46,7 +46,12 @@ interface LcMod {
 interface WrapperMod {
   run(
     args: string[],
-    deps?: { spawn?: (vitestArgs: string[]) => number | Promise<number>; main?: (argv: string[]) => number | Promise<number> },
+    deps?: {
+      spawn?: (vitestArgs: string[]) => number | Promise<number>;
+      main?: (argv: string[]) => number | Promise<number>;
+      rm?: (file: string) => void;
+      err?: (text: string) => void;
+    },
   ): Promise<number>;
 }
 
@@ -102,6 +107,12 @@ describe('SC-5 parseLcov', () => {
     expect(m.get('packages/x/a:b.ts')?.get(2)).toBe(1);
   });
 
+  it('SC-5: parseLcov sums the hits of a file that appears in several SF records', async () => {
+    const { parseLcov } = await load();
+    const m = parseLcov(`${lcov({ 'a.mjs': { 1: 2, 2: 0 } })}${lcov({ 'b.mjs': { 1: 1 } })}${lcov({ 'a.mjs': { 1: 0, 2: 3 } })}`);
+    expect([...(m.get('a.mjs') ?? [])]).toEqual([[1, 2], [2, 3]]);
+  });
+
   it('SC-5: parseLcov of an empty report is empty', async () => {
     const { parseLcov } = await load();
     expect(parseLcov('').size).toBe(0);
@@ -122,6 +133,12 @@ describe('SC-5 parseAddedLines', () => {
       '@@ -40,0 +41,0 @@',
     );
     expect(lines(parseAddedLines(diff), 'a.mjs')).toEqual([3, 4, 12, 21, 22, 23]);
+  });
+
+  it('SC-5: parseAddedLines counts context lines and ignores a "no newline" marker inside a hunk (-U1 diff)', async () => {
+    const { parseAddedLines } = await load();
+    const diff = mod('a.mjs', '@@ -4,3 +4,4 @@', ' ctx', '-old', '+new1', '+new2', ' ctx2', '\\ No newline at end of file');
+    expect(lines(parseAddedLines(diff), 'a.mjs')).toEqual([5, 6]);
   });
 
   it('SC-5: parseAddedLines handles several files and a new file', async () => {
@@ -359,6 +376,29 @@ describe('SC-5 main with injected deps', () => {
     expect(o.code, o.all).toBe(0);
     const under = await run(['--threshold', '59'], changed(50, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]));
     expect(under.code).toBe(1);
+  });
+
+  it('SC-5: the default threshold is 80: 79 of 100 and 39 of 49 fail', async () => {
+    for (const [n, k] of [[100, 21], [49, 10]] as const) {
+      const o = await run([], changed(n, Array.from({ length: k }, (_, i) => i + 1)));
+      expect(o.code, o.all).toBe(1);
+      expect(o.out).toContain('threshold 80%');
+    }
+  });
+
+  it('SC-5: SF paths are matched repo-relative whatever their spelling (absolute, ./, backslashes)', async () => {
+    const diff = mod('a.mjs', '@@ -1 +1 @@', '-a', '+b') + mod('s/b.mjs', '@@ -1 +1 @@', '-a', '+b') + mod('s/c.mjs', '@@ -1 +1 @@', '-a', '+b');
+    const o = await run([], { diff, lcovText: lcov({ '/repo/a.mjs': { 1: 0 }, './s/b.mjs': { 1: 0 }, 's\\c.mjs': { 1: 0 } }) });
+    expect(o.code, o.all).toBe(1);
+    for (const loc of ['a.mjs:1', 's/b.mjs:1', 's/c.mjs:1']) expect(o.all).toContain(loc);
+  });
+
+  it('SC-5: a report without any SF record is exit 2, even with an empty diff (never a silent pass)', async () => {
+    for (const lcovText of ['', 'TN:\n', 'DA:1,1\nend_of_record\n']) {
+      const o = await run([], { diff: '', lcovText });
+      expect(o.code, o.all).toBe(2);
+      expect(o.err).toMatch(/^changed-line-coverage: error: /m);
+    }
   });
 
   it('SC-5: --threshold overrides the default of 80', async () => {
@@ -615,6 +655,9 @@ describe('SC-5 main against real git', () => {
       git(repo, 'config', key, value);
       const r = await runMain(vsHead(lc), repo);
       expect(r.code, `${key}: ${r.all}`).toBe(0);
+      const miss = await runMain(vsHead(report({ 'scripts/a.mjs': da(10, [5]) })), repo);
+      expect(miss.code, `${key}: ${miss.all}`).toBe(1);
+      expect(miss.all).toContain('scripts/a.mjs:5');
       git(repo, 'config', '--unset', key);
     }
     process.env.GIT_DIFF_OPTS = '--unified=5';
@@ -642,6 +685,15 @@ describe('SC-5 main against real git', () => {
       expect(r.code, `${name}: ${r.all}`).toBe(1);
       expect(r.all).toContain('scripts/a.mjs:2');
     }
+  });
+
+  it('SC-5: a changed path that git C-quotes (a double quote in the name) is exit 2, never a silent pass', async () => {
+    const name = 'scripts/a"b.mjs';
+    const repo = makeRepo('c-quoted', { [name]: body(2) });
+    put(repo, name, body(2, { 2: 'c();' }));
+    const r = await runMain(vsHead(report({ [name]: da(2, [2]) })), repo);
+    expect(r.code, r.all).toBe(2);
+    expect(r.err).toMatch(/^changed-line-coverage: error: /m);
   });
 
   it('SC-5: a rename is a delete plus an add: every executable line of the new path counts', async () => {
@@ -812,15 +864,28 @@ describe('SC-5 changed-line-coverage.mjs as a command', () => {
 
 // ---------------------------------------------------------------------------------------------------------------------
 describe('SC-5 scripts/test.mjs', () => {
-  const calls = (code: number | Promise<number>, mainCode: number | Promise<number> = 0): { spawned: string[][]; mains: string[][]; spawn: (a: string[]) => number | Promise<number>; main: (a: string[]) => number | Promise<number> } => {
-    const spawned: string[][] = [];
-    const mains: string[][] = [];
-    return {
-      spawned,
-      mains,
-      spawn: (a) => { spawned.push(a); return code; },
-      main: (a) => { mains.push(a); return mainCode; },
+  interface Calls {
+    spawned: string[][];
+    mains: string[][];
+    removed: string[];
+    errors: string[];
+    spawn: (a: string[]) => number | Promise<number>;
+    main: (a: string[]) => number | Promise<number>;
+    rm: (f: string) => void;
+    err: (s: string) => void;
+  }
+  const calls = (code: number | Promise<number>, mainCode: number | Promise<number> = 0): Calls => {
+    const c: Calls = {
+      spawned: [],
+      mains: [],
+      removed: [],
+      errors: [],
+      spawn: (a) => { c.spawned.push(a); return code; },
+      main: (a) => { c.mains.push(a); return mainCode; },
+      rm: (f) => { expect(c.spawned).toHaveLength(0); c.removed.push(f); },
+      err: (s) => { c.errors.push(s); },
     };
+    return c;
   };
 
   it('SC-5: pnpm test runs vitest with the forwarded arguments exactly as given and returns its exit code, without the coverage check', async () => {
@@ -859,6 +924,38 @@ describe('SC-5 scripts/test.mjs', () => {
       const c = calls(code, 0);
       expect(await run(['--project', 'unit', '--coverage'], c)).toBe(code);
       expect(c.mains).toHaveLength(0);
+    }
+  });
+
+  it('SC-5: with --coverage the previous coverage/lcov.info is deleted before vitest starts (a stale report is never gated)', async () => {
+    const { run } = await loadWrapper();
+    const c = calls(0, 0);
+    expect(await run(['--project', 'unit', '--coverage'], c)).toBe(0);
+    expect(c.removed).toEqual(['coverage/lcov.info']);
+    const plain = calls(0);
+    await run(['--project', 'unit'], plain);
+    expect(plain.removed).toHaveLength(0);
+  });
+
+  it('SC-5: with coverage, any option but --project <name> is exit 2 before vitest runs (no override can narrow, redirect or disable the report)', async () => {
+    const { run } = await loadWrapper();
+    const refused = [
+      ['--coverage', '--no-coverage'], ['--no-coverage'], ['--coverage=true'], ['--coverage.enabled'], ['--coverage.enabled=false'],
+      ['--coverage', '--coverage.include=packages/*/src/**'], ['--coverage', '--coverage.exclude', 'scripts/x.mjs'],
+      ['--coverage', '--coverage.reportsDirectory=cov2'], ['--coverage', '--config', 'alt.config.ts'], ['--coverage', '-c', 'alt.config.ts'],
+      ['--coverage', '--root', '/tmp'], ['--coverage', '--watch'], ['--coverage', '-w'], ['--coverage', '--project', '--no-coverage'],
+    ];
+    for (const args of refused) {
+      const c = calls(0, 0);
+      expect(await run(['--project', 'unit', ...args], c), args.join(' ')).toBe(2);
+      expect(c.spawned).toHaveLength(0);
+      expect(c.mains).toHaveLength(0);
+      expect(c.errors.join('')).toContain('not allowed');
+    }
+    for (const args of [['--project=unit', '--coverage'], ['--coverage', 'scripts/test/x.test.ts'], ['--coverage', '--', '-t', 'x']]) {
+      const c = calls(0, 0);
+      expect(await run(args, c), args.join(' ')).toBe(0);
+      expect(c.mains).toHaveLength(1);
     }
   });
 
@@ -924,6 +1021,40 @@ describe('SC-5 scripts/test.mjs', () => {
       const passing = wrapper(['--coverage'], dir);
       expect(passing.status, `${passing.stdout}\n${passing.stderr}`).toBe(0);
       expect(passing.stdout).toMatch(/100(\.0+)?%/);
+    }, 120_000);
+
+    it('SC-5: a failing test makes `test.mjs` exit non-zero, with and without --coverage (the gate never runs on a red suite)', () => {
+      const dir = project('e2e-red');
+      writeFileSync(path.join(dir, 'a.test.mjs'), testFile('  expect(f(0)).toBe(2);\n  expect(1).toBe(2);\n'));
+      for (const args of [[], ['--coverage']]) {
+        const r = wrapper(args, dir);
+        expect(r.status, `${args.join(' ')}: ${r.stdout}\n${r.stderr}`).not.toBe(0);
+        expect(r.stdout).not.toContain('changed-line coverage:');
+      }
+    }, 120_000);
+
+    it('SC-5: SIGTERM to the wrapper stops vitest too (no orphan) and exits 143', async () => {
+      const dir = project('e2e-sigterm');
+      const marker = path.join(dir, 'started.json');
+      writeFileSync(
+        path.join(dir, 'a.test.mjs'),
+        `import { test } from 'vitest';\nimport { writeFileSync } from 'node:fs';\ntest('slow', async () => {\n  writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ ppid: process.ppid }));\n  await new Promise((r) => setTimeout(r, 60000));\n}, 70000);\n`,
+      );
+      const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_') && !k.startsWith('VITEST')));
+      const child = spawn(process.execPath, [wrapperScript], { cwd: dir, env: clean, stdio: 'ignore' });
+      const exited = new Promise<number | null>((resolve) => child.on('close', (code) => resolve(code)));
+      const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      try {
+        for (let i = 0; i < 300 && !existsSync(marker); i++) await new Promise((r) => setTimeout(r, 100));
+        expect(existsSync(marker), 'the test never started').toBe(true);
+        const { ppid } = JSON.parse(readFileSync(marker, 'utf8')) as { ppid: number };
+        child.kill('SIGTERM');
+        expect(await exited).toBe(143);
+        for (let i = 0; i < 50 && alive(ppid); i++) await new Promise((r) => setTimeout(r, 100));
+        expect(alive(ppid), 'vitest outlived the wrapper').toBe(false);
+      } finally {
+        child.kill('SIGKILL');
+      }
     }, 120_000);
 
     it('SC-5: `test.mjs` without --coverage does not run the changed-line check, even with an uncovered change', () => {
