@@ -1,0 +1,25 @@
+diff --git a/apps/cli/src/main.ts b/apps/cli/src/main.ts
+new file mode 100644
+index 0000000..3e2e0b4
+--- /dev/null
++++ b/apps/cli/src/main.ts
+@@ -0,0 +1,2 @@
++console.log('x');
++process.stdout.write('y\n');
+diff --git a/packages/eventlog/src/err.ts b/packages/eventlog/src/err.ts
+new file mode 100644
+index 0000000..bccf077
+--- /dev/null
++++ b/packages/eventlog/src/err.ts
+@@ -0,0 +1,3 @@
++export function warn(message: string): void {
++  process.stderr.write(`${message}\n`);
++}
+diff --git a/scripts/tool.mjs b/scripts/tool.mjs
+new file mode 100644
+index 0000000..3e2e0b4
+--- /dev/null
++++ b/scripts/tool.mjs
+@@ -0,0 +1,2 @@
++console.log('x');
++process.stdout.write('y\n');

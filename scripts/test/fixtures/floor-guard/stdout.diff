@@ -1,0 +1,22 @@
+diff --git a/packages/runtime/src/out.ts b/packages/runtime/src/out.ts
+new file mode 100644
+index 0000000..9939e76
+--- /dev/null
++++ b/packages/runtime/src/out.ts
+@@ -0,0 +1,9 @@
++export function a(): void {
++  console.log('x');
++  console.info('x');
++  console.debug('x');
++  process.stdout.write('x');
++  const out = process.stdout;
++  if (process.stdout.isTTY) out.end();
++  globalThis.console.log('x');
++}
+diff --git a/packages/windows/src/out.ts b/packages/windows/src/out.ts
+new file mode 100644
+index 0000000..5eee864
+--- /dev/null
++++ b/packages/windows/src/out.ts
+@@ -0,0 +1 @@
++console.log('x');

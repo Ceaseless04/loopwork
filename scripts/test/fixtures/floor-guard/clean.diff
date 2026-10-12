@@ -1,0 +1,30 @@
+diff --git a/packages/graph/src/ok.ts b/packages/graph/src/ok.ts
+new file mode 100644
+index 0000000..8809692
+--- /dev/null
++++ b/packages/graph/src/ok.ts
+@@ -0,0 +1,10 @@
++import type { Node } from './types.js';
++
++export function ids(nodes: Node[]): string[] {
++  try {
++    return nodes.map((n) => n.id);
++  } catch (error) {
++    process.stderr.write(`ids failed: ${String(error)}\n`);
++    return [];
++  }
++}
+diff --git a/packages/graph/test/ok.test.ts b/packages/graph/test/ok.test.ts
+new file mode 100644
+index 0000000..f62fe67
+--- /dev/null
++++ b/packages/graph/test/ok.test.ts
+@@ -0,0 +1,8 @@
++import { describe, expect, it } from 'vitest';
++import { ids } from '../src/ok.js';
++
++describe('ids', () => {
++  it('GM-1: lists node ids', () => {
++    expect(ids([])).toEqual([]);
++  });
++});

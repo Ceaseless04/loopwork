@@ -1,0 +1,13 @@
+diff --git a/CONSTRAINTS.md b/CONSTRAINTS.md
+index 438e86f..4176eee 100644
+--- a/CONSTRAINTS.md
++++ b/CONSTRAINTS.md
+@@ -29,7 +29,7 @@ Where the "Starts" column says a date, the check **warns** until then and **bloc
+ | Security: code | no high findings | `semgrep scan --config p/default --config p/typescript --error` | CI | 2026-10-26 |
+ | Security: deps | nothing at high or above | `osv-scanner scan source -r .` | CI | 2026-10-26 |
+ | Accessibility | zero critical or serious axe violations on the GUI's launcher, run list and run view | `axe <local ui-server URL> --tags wcag2a,wcag2aa,wcag21aa` | CI (needs the UV-13 smoke harness) | 2026-10-26, or when UV-13 lands if later |
+-| Time per stage | edit loop ≤ 5 s on changed files; task end ≤ 90 s | the scripts below | always | now (a slow check moves to CI, it is not skipped) |
++| Time per stage | edit loop ≤ 50 s on changed files; task end ≤ 90 s | the scripts below | always | now (a slow check moves to CI, it is not skipped) |
+ 
+ At least two of these are **external** (osv-scanner reads a vulnerability database, axe encodes WCAG); the rest are project-owned.
+ 
