@@ -10,6 +10,15 @@
 // Exit 0 = threshold met, 1 = not met (uncovered file:line listed on stderr), 2 = usage, IO or git error (fails closed:
 // a bad ref, a missing report or a git failure is never a pass).
 // Every git call is hardened against user config and attributes (see gitDiffArgs) and runs from the repo top level.
+// SF paths are taken as repo-relative after normalisation (absolute, ./ and backslash spellings); a report with no SF
+// record is exit 2.
+// Known limits (by design or pending a plan decision; review is the backstop):
+//   - the percentage is over all changed lines together, not per file: a small untested file can pass inside a
+//     well-covered change;
+//   - LOOPWORK_BASE_REF=HEAD measures only uncommitted work;
+//   - code outside coverage.include (scripts/lib/**, scripts/*.ts, scripts/*.js, packages/*/bin, apps/**) is never
+//     measured, so its changes are ignored (widening include is a plan decision: T03 pins it);
+//   - an absolute SF path spelled through a symlink of the repo top level does not match and is ignored.
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -129,8 +138,13 @@ export async function main(argv, deps = {}) {
   } = deps;
   try {
     const { lcov: lcovPath, base, num, den } = parseArgs(argv);
-    const lcov = parseLcov(await readFile(path.resolve(cwd, lcovPath)));
+    const text = await readFile(path.resolve(cwd, lcovPath));
     const top = (await git(['rev-parse', '--show-toplevel'])).replace(/\n$/, '');
+    // SF paths as repo-relative POSIX paths, whatever spelling the reporter used (absolute, ./, backslashes).
+    const lcov = parseLcov(
+      text.replace(/^SF:([^\r\n]*)/gm, (_, sf) => `SF:${path.relative(top, path.resolve(top, sf.replaceAll('\\', '/'))).replaceAll(path.sep, '/')}`),
+    );
+    if (lcov.size === 0) throw new Error(`no SF records in ${lcovPath}: an empty report is never a pass`);
     const g = async (args) => git(['-C', top, ...args]);
     const ref =
       base ??

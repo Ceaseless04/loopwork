@@ -140,7 +140,9 @@ function added(t, ln,   lt, s, i) {
   if (code) {
     # Suppressions and TODOs only count inside comments (// ... or /* ... or a ` * ` continuation), so a string or
     # test title that merely names them does not trip the guard.
-    if (t ~ /(\/\/|\/[*]|^[ \t]*[*]).*(@ts-ignore|@ts-nocheck|eslint-disable|istanbul ignore|nosemgrep|gitleaks:allow|v8 ignore)/ ||
+    # Coverage hints: the v8 coverage converter honours istanbul, c8, v8 and node:coverage followed by any whitespace.
+    if (t ~ /(\/\/|\/[*]|^[ \t]*[*]).*(@ts-ignore|@ts-nocheck|eslint-disable|nosemgrep|gitleaks:allow)/ ||
+        lt ~ /(\/\/|\/[*]|^[ \t]*[*]).*(istanbul|[cv]8|node:coverage)[^a-z0-9_]+ignore/ ||
         t ~ /(\/\/|\/[*]|^[ \t]*[*]).*@ts-expect-error[ \t:]*([*][\/])?[ \t]*$/) viol("suppression", file, ln)
     if (lt ~ /throw[ \t]+(new[ \t]+)?error[ \t]*[(][ \t]*["'`][^"'`]*not (yet )?implemented/ ||
         t ~ /catch[ \t]*([(][^)]*[)])?[ \t]*[{][ \t]*(\/[*][^*]*[*]\/)?[ \t;]*[}]/ ||
