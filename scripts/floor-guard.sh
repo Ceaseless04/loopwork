@@ -36,6 +36,9 @@
 #     password/passwd/secret/api_key values); unquoted PASSWORD=value is not seen;
 #   - stdout variants (process['stdout'], a split `console` newline `.log`) and packages/* code outside src/: the lint
 #     no-console rule is the backstop;
+#   - a coverage-ignore hint split across lines inside one block comment (`/* c8` newline `ignore next */`) is not detected
+#     (the converter matches across the newline); review is the backstop. The hint regex mirrors ast-v8-to-istanbul 1.0.7's
+#     semantics: re-check it on dependency upgrades;
 #   - a @ts-expect-error with a one-character reason: the lint minimum description length is the backstop;
 #   - false positives, with workarounds: `host: stringify(x)` reads as a non-loopback host, a TODO or FIXME in
 #     a comment is a stub even when documenting history, `catch {}` in a template string is an empty catch (reword it);
@@ -141,8 +144,10 @@ function added(t, ln,   lt, s, i) {
     # Suppressions and TODOs only count inside comments (// ... or /* ... or a ` * ` continuation), so a string or
     # test title that merely names them does not trip the guard.
     # Coverage hints: the v8 coverage converter honours istanbul, c8, v8 and node:coverage followed by any whitespace.
+    # They count anywhere on a line, not only in comments: the converter scans start/stop line by line (even inside a
+    # string literal) and a block comment's inner lines carry no comment marker.
     if (t ~ /(\/\/|\/[*]|^[ \t]*[*]).*(@ts-ignore|@ts-nocheck|eslint-disable|nosemgrep|gitleaks:allow)/ ||
-        lt ~ /(\/\/|\/[*]|^[ \t]*[*]).*(istanbul|[cv]8|node:coverage)[^a-z0-9_]+ignore/ ||
+        lt ~ /(istanbul|[cv]8|node:coverage)[^a-z0-9_]+ignore[^a-z0-9_]/ ||
         t ~ /(\/\/|\/[*]|^[ \t]*[*]).*@ts-expect-error[ \t:]*([*][\/])?[ \t]*$/) viol("suppression", file, ln)
     if (lt ~ /throw[ \t]+(new[ \t]+)?error[ \t]*[(][ \t]*["'`][^"'`]*not (yet )?implemented/ ||
         t ~ /catch[ \t]*([(][^)]*[)])?[ \t]*[{][ \t]*(\/[*][^*]*[*]\/)?[ \t;]*[}]/ ||
