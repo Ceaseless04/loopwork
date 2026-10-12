@@ -9,7 +9,10 @@
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck && tsc -p tsconfig.json --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "vitest run --project unit",
+    "test:pg": "vitest run --project pg --passWithNoTests",
+    "test:e2e": "vitest run --project e2e --passWithNoTests"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^5.0.3",

@@ -11,7 +11,9 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "test": "vitest run --root ../.. --project unit --passWithNoTests packages/eventlog/",
+    "test:pg": "vitest run --root ../.. --project pg --passWithNoTests packages/eventlog/"
   },
   "dependencies": {
     "pg": "^8.23.1"
