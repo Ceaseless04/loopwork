@@ -1,0 +1,61 @@
+diff --git a/packages/eventlog/test/a.test.ts b/packages/eventlog/test/a.test.ts
+index c61c333..9a7edc3 100644
+--- a/packages/eventlog/test/a.test.ts
++++ b/packages/eventlog/test/a.test.ts
+@@ -1,3 +1,3 @@
+ it('EL-1: a', () => {
+-  expect(x).toBe(1);
++  // expect(x).toBe(1);
+ });
+diff --git a/packages/eventlog/test/b.test.ts b/packages/eventlog/test/b.test.ts
+index c61c333..9a7edc3 100644
+--- a/packages/eventlog/test/b.test.ts
++++ b/packages/eventlog/test/b.test.ts
+@@ -1,3 +1,3 @@
+ it('EL-1: a', () => {
+-  expect(x).toBe(1);
++  const s = 'expect(x)';
+ });
+diff --git a/packages/eventlog/test/c.test.ts b/packages/eventlog/test/c.test.ts
+index c61c333..9a7edc3 100644
+--- a/packages/eventlog/test/c.test.ts
++++ b/packages/eventlog/test/c.test.ts
+@@ -1,3 +1,3 @@
+ it('EL-1: a', () => {
+-  expect(x).toBe(1);
++  run(); // expect(x)
+ });
+diff --git a/packages/eventlog/test/d.test.ts b/packages/eventlog/test/d.test.ts
+index c61c333..9a7edc3 100644
+--- a/packages/eventlog/test/d.test.ts
++++ b/packages/eventlog/test/d.test.ts
+@@ -1,3 +1,3 @@
+ it('EL-1: a', () => {
+-  expect(x).toBe(1);
++  /* expect(x) */
+ });
+diff --git a/packages/eventlog/test/e.test.ts b/packages/eventlog/test/e.test.ts
+index c61c333..9a7edc3 100644
+--- a/packages/eventlog/test/e.test.ts
++++ b/packages/eventlog/test/e.test.ts
+@@ -1,3 +1,2 @@
+ it('EL-1: a', () => {
+-  expect.soft(x).toBe(1);
+ });
+diff --git a/packages/eventlog/test/f.test.ts b/packages/eventlog/test/f.test.ts
+index c61c333..9a7edc3 100644
+--- a/packages/eventlog/test/f.test.ts
++++ b/packages/eventlog/test/f.test.ts
+@@ -1,3 +1,2 @@
+ it('EL-1: a', () => {
+-  expect(x).toBe(1); // fine
+ });
+diff --git a/packages/eventlog/test/g.test.ts b/packages/eventlog/test/g.test.ts
+index c61c333..9a7edc3 100644
+--- a/packages/eventlog/test/g.test.ts
++++ b/packages/eventlog/test/g.test.ts
+@@ -1,3 +1,3 @@
+ it('EL-1: a', () => {
+-  expect(x).toBe(1);
++   * expect(x)
+ });

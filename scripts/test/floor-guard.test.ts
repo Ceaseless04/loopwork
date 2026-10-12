@@ -127,12 +127,8 @@ describe('SC-2 floor-guard.sh', () => {
     expect(r.stderr).toBe('');
   });
 
-  it('SC-2: exits 0 on a clean diff and stays within the 5 s edit-loop budget', () => {
-    const t0 = Date.now();
-    const r = runFixture('clean');
-    const elapsed = Date.now() - t0;
-    expectPasses(r);
-    expect(elapsed).toBeLessThan(5000);
+  it('SC-2: exits 0 on a clean diff', () => {
+    expectPasses(runFixture('clean'));
   });
 
   it('SC-2: exits 0 on an empty diff read from stdin', () => {
@@ -180,7 +176,7 @@ describe('SC-2 floor-guard.sh', () => {
 
   it('SC-2: stub rule fails Not-implemented throws, empty catch blocks and a TODO standing for the implementation', () => {
     const r = runFixture('stub');
-    expectFails(r, 'stub', [...at('packages/engine/src/stub.ts', [2, 5, 8, 11]), ...at('scripts/stub.mjs', [1])]);
+    expectFails(r, 'stub', [...at('packages/engine/src/stub.ts', [2, 5, 8, 11, ...range(14, 20)]), ...at('scripts/stub.mjs', [1])]);
   });
 
   it('SC-2: skipped-test rule fails .skip, .todo, xit and xdescribe', () => {
@@ -217,7 +213,7 @@ describe('SC-2 floor-guard.sh', () => {
   });
 
   it('SC-2: bind rule fails the all-interfaces IPv4 address, the IPv6 wildcard and host options other than loopback', () => {
-    expectFails(runFixture('bind'), 'bind', at('packages/ui-server/src/server.ts', range(3, 8)));
+    expectFails(runFixture('bind'), 'bind', at('packages/ui-server/src/server.ts', range(3, 16)));
   });
 
   it('SC-2: constraints-weakened rule fails a removed line in CONSTRAINTS.md', () => {
@@ -372,5 +368,225 @@ describe('SC-2 floor-guard.sh against real git state', () => {
       expect(r.stderr).toMatch(/usage/i);
       expect(violations(r.stderr)).toEqual([]);
     }
+  });
+});
+
+// Repair cycle 1 (T04): hardening against git configuration, hidden files and hunk shapes.
+describe('SC-2 floor-guard.sh repair 1', () => {
+  const IGNORE = `// @ts-${'ignore'}`;
+  const baseOf = (repo: string): Record<string, string> => ({ LOOPWORK_BASE_REF: git(repo, 'rev-parse', 'HEAD') });
+  const put = (repo: string, rel: string, body: string): void => {
+    mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true });
+    writeFileSync(path.join(repo, rel), body);
+  };
+  /** A repo where packages/graph/src/v.ts is committed clean, then gets a suppression at line 2 in the working tree. */
+  function dirtyRepo(name: string): string {
+    const repo = makeRepo(name);
+    put(repo, 'packages/graph/src/v.ts', 'export const a = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'v');
+    return repo;
+  }
+  /** A new-file diff (built at run time over stdin, so no forbidden literal lives in this source file). */
+  const newFile = (file: string, ...lines: string[]): string =>
+    `diff --git a/${file} b/${file}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}`).join('\n')}\n`;
+  const stdin = (diff: string): Run => guard(['--diff-file', '-'], { input: diff });
+  const violate = (repo: string): void => put(repo, 'packages/graph/src/v.ts', `export const a = 1;\n${IGNORE}\n`);
+
+  describe('F1: git attributes and textconv cannot hide a diff', () => {
+    it('SC-2: a committed `-diff` attribute does not hide a violation', () => {
+      const repo = makeRepo('f1-committed');
+      put(repo, '.gitattributes', '*.ts -diff\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '-q', '-m', 'attrs');
+      put(repo, 'packages/graph/src/v.ts', 'export const a = 1;\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '-q', '-m', 'v');
+      violate(repo);
+      expectFails(guard([], { cwd: repo, env: baseOf(repo) }), 'suppression', [['packages/graph/src/v.ts', 2]]);
+    });
+
+    it('SC-2: an untracked `binary` attribute does not hide an untracked violation', () => {
+      const repo = makeRepo('f1-untracked');
+      put(repo, '.gitattributes', '*.ts binary\n');
+      violate(repo);
+      expectFails(guard([], { cwd: repo, env: baseOf(repo) }), 'suppression', [['packages/graph/src/v.ts', 2]]);
+    });
+
+    it('SC-2: a textconv driver from .git/info/attributes does not hide a violation', () => {
+      const repo = dirtyRepo('f1-textconv');
+      put(repo, '.git/info/attributes', '*.ts diff=x\n');
+      git(repo, 'config', 'diff.x.textconv', 'true');
+      violate(repo);
+      expectFails(guard([], { cwd: repo, env: baseOf(repo) }), 'suppression', [['packages/graph/src/v.ts', 2]]);
+    });
+
+    it('SC-2: an untracked binary (NUL) file is scanned without noise and passes', () => {
+      const repo = makeRepo('f1-nul');
+      put(repo, 'packages/graph/src/blob.bin', 'a\0b\0c\n');
+      const r = guard([], { cwd: repo, env: baseOf(repo) });
+      expectPasses(r);
+      expect(r.stderr).toBe('');
+    });
+  });
+
+  describe('F3/F6: every added line under Exceptions counts, whatever the diff context', () => {
+    it('SC-2: constraints-weakened fails a documented no-leading-pipe row, a bullet, a row before a later heading and a zero-context hunk', () => {
+      expectFails(runFixture('constraints-exception-nopipe'), 'constraints-weakened', [['CONSTRAINTS.md', 94]]);
+      expectFails(runFixture('constraints-exception-bullet'), 'constraints-weakened', [['CONSTRAINTS.md', 91]]);
+      expectFails(runFixture('constraints-exception-notes'), 'constraints-weakened', [['CONSTRAINTS.md', 95]]);
+      expectFails(runFixture('constraints-exception-u0'), 'constraints-weakened', [['CONSTRAINTS.md', 94]]);
+    });
+
+    it('SC-2: a user diff.context=0 or GIT_DIFF_OPTS=--unified=0 cannot hide an appended Exceptions row', () => {
+      const repo = makeRepo('f6-context');
+      const table = '## Exceptions\n\nNone.\n\n| ID | Rule | Path | Reason | Owner | Expires |\n|---|---|---|---|---|---|\n';
+      put(repo, 'CONSTRAINTS.md', `# C\n\n${table}`);
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '-q', '-m', 'constraints');
+      put(repo, 'CONSTRAINTS.md', `# C\n\n${table}| EX-1 | r | p | why | o | 2026-12-01 |\n`);
+      git(repo, 'config', 'diff.context', '0');
+      const expected: Loc[] = [['CONSTRAINTS.md', 9]];
+      expectFails(guard([], { cwd: repo, env: baseOf(repo) }), 'constraints-weakened', expected);
+      expectFails(guard([], { cwd: repo, env: { ...baseOf(repo), GIT_DIFF_OPTS: '--unified=0' } }), 'constraints-weakened', expected);
+    });
+  });
+
+  describe('F5/F8: option-looking base refs and the secret exemption', () => {
+    it('SC-2: an option-looking LOOPWORK_BASE_REF is refused (exit 2), never passed to git as a flag', () => {
+      const repo = makeRepo('f5-option');
+      for (const ref of ['--stat', '--output=/dev/null']) {
+        const r = guard([], { cwd: repo, env: { LOOPWORK_BASE_REF: ref } });
+        expect(r.status, r.stderr).toBe(2);
+        expect(r.stderr).toMatch(/^floor-guard: error: /m);
+      }
+    });
+
+    it('SC-2: the secret exemption covers only scripts/test/fixtures/floor-guard/<name>.diff', () => {
+      const dir = 'scripts/test/fixtures/floor-guard';
+      const key = `export const k = 'AKIA${'IOSFODNN7EXAMPLE'}';`;
+      expectFails(stdin(newFile(`${dir}/creds.ts`, key)), 'secret', [[`${dir}/creds.ts`, 1]]);
+      expectFails(stdin(newFile(`${dir}/sub/x.diff`, key)), 'secret', [[`${dir}/sub/x.diff`, 1]]);
+      expectPasses(stdin(newFile(`${dir}/x.diff`, key)));
+    });
+  });
+
+  describe('F2: only real expect calls count', () => {
+    it('SC-2: a commented-out or quoted expect( does not balance a removed expect( (including expect.soft)', () => {
+      const t = (n: string): Loc => [`packages/eventlog/test/${n}.test.ts`, 2];
+      expectFails(runFixture('test-expect-faked'), 'skipped-test', ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map(t));
+    });
+
+    it('SC-2: must pass expect.soft swaps, trailing-comment edits and removed commented-out expects', () => {
+      expectPasses(runFixture('test-expect-ok'));
+    });
+  });
+
+  describe('F12: default mode with many untracked files', () => {
+    it('SC-2: 25 untracked files and a violation, run from a subdirectory: one git diff, under 5 s, real index untouched', () => {
+      const repo = makeRepo('f12-many');
+      for (let i = 0; i < 25; i++) put(repo, `packages/graph/src/u${i}.ts`, `export const u${i} = ${i};\n`);
+      put(repo, 'packages/graph/src/u7.ts', `export const u7 = 7;\n${IGNORE}\n`);
+      // A PATH shim that logs every git invocation, to prove the untracked files do not cost one spawn each.
+      const real = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+      const shim = path.join(scratch, 'f12-shim');
+      mkdirSync(shim, { recursive: true });
+      const log = path.join(shim, 'calls.log');
+      writeFileSync(path.join(shim, 'git'), `#!/bin/sh\necho "$*" >> '${log}'\nexec '${real}' "$@"\n`, { mode: 0o755 });
+      const indexBefore = readFileSync(path.join(repo, '.git/index'));
+      const t0 = Date.now();
+      const r = guard([], {
+        cwd: path.join(repo, 'packages/graph'),
+        env: { ...baseOf(repo), PATH: `${shim}${path.delimiter}${process.env.PATH ?? ''}` },
+      });
+      const elapsed = Date.now() - t0;
+      expectFails(r, 'suppression', [['packages/graph/src/u7.ts', 2]]);
+      expect(elapsed).toBeLessThan(5000);
+      const diffs = readFileSync(log, 'utf8').split('\n').filter((l) => / diff /.test(` ${l} `));
+      expect(diffs).toHaveLength(1);
+      expect(readFileSync(path.join(repo, '.git/index')).equals(indexBefore)).toBe(true);
+      expect(git(repo, 'status', '--porcelain')).toMatch(/^\?\? packages\/graph\/src\/u7\.ts$/m);
+    });
+  });
+
+  describe('F9/QPATH: stub variants and unscannable paths', () => {
+    it('SC-2: must pass a handled catch and words that only appear in strings or titles', () => {
+      expectPasses(runFixture('stub-ok'));
+    });
+
+    it('SC-2: a path git must C-quote (double quote, tab) fails closed with exit 2, never silently skipped', () => {
+      for (const [name, rel] of [['quote', 'packages/x/src/a"b.ts'], ['tab', 'packages/x/src/a\tb.ts']] as const) {
+        const repo = makeRepo(`qpath-${name}`);
+        put(repo, rel, `export const a = 1;\n${IGNORE}\n`);
+        const r = guard([], { cwd: repo, env: baseOf(repo) });
+        expect(r.status, r.stderr).toBe(2);
+        expect(r.stderr).toMatch(/^floor-guard: error: cannot scan a C-quoted path/m);
+      }
+    });
+  });
+
+  describe('F10/F13/F14: extensions, CRLF and ts-nocheck', () => {
+    it('SC-2: suppression is scanned in every code extension, in @ts-nocheck and in empty-reason / block / JSDoc forms', () => {
+      expectFails(runFixture('suppression-ext'), 'suppression', [
+        ...['a.tsx', 'b.js', 'c.cjs', 'd.mts', 'e.cts', 'f.jsx', 'nocheck.ts'].map((f): Loc => [`scripts/ext/${f}`, 1]),
+        ...at('scripts/ext/forms.ts', [1, 2, 4]),
+      ]);
+    });
+
+    it('SC-2: skipped-test is scanned in every test extension and for the x-prefixed test alias', () => {
+      const names = ['a.spec.ts', 'b.test.tsx', 'c.test.mts', 'd.test.js', 'e.test.cjs', 'f.spec.jsx', 'g.test.cts', 'h.spec.mjs', 'i.test.ts'];
+      expectFails(runFixture('skipped-test-ext'), 'skipped-test', names.map((f): Loc => [`packages/eventlog/test/${f}`, 1]));
+    });
+
+    it('SC-2: a CRLF diff is scanned like an LF one (a reason-less @ts-expect-error still fails)', () => {
+      expectFails(stdin(newFile('packages/graph/src/c.ts', `// @ts-${'expect-error'}\r`)), 'suppression', [['packages/graph/src/c.ts', 1]]);
+      expectPasses(stdin(newFile('packages/graph/src/c.ts', `// @ts-${'expect-error'}: deliberate\r`)));
+    });
+  });
+
+  describe('MUT: pinned behaviours', () => {
+    it('SC-2: a net removal of exactly one expect( fails', () => {
+      expectFails(runFixture('test-expect-minus-one'), 'skipped-test', [['packages/eventlog/test/z.test.ts']]);
+    });
+
+    it('SC-2: stdout rule fails globalThis.console assigned to a variable', () => {
+      expectFails(runFixture('stdout-globalthis'), 'stdout', [['packages/runtime/src/g.ts', 1]]);
+    });
+
+    it('SC-2: secret rule fails GitHub and Google key shapes and password / secret / api_key assignments', () => {
+      expectFails(runFixture('secret-forms'), 'secret', ['gh.env', 'g.env', 'p.yaml', 's.yaml', 'a.yaml'].map((f): Loc => [`conf/${f}`, 1]));
+    });
+
+    it('SC-2: the test database URL allowlist is exact (another host with the same credentials fails)', () => {
+      expectFails(runFixture('secret-allowlist-exact'), 'secret', [['docs/x.md', 1]]);
+    });
+
+    it('SC-2: Test-Change-Reason excuses only from the start of a line', () => {
+      for (const text of ['Fix\n\n  Test-Change-Reason: indented\n', 'Fix\n\ntest-change-reason: lowercase\n', 'Fix Test-Change-Reason: inline\n']) {
+        const extra = ['--commit-msg-file', commitMessage('mut-reason', text)];
+        expectFails(runFixture('skipped-test', extra), 'skipped-test', at('packages/eventlog/test/skipped.test.ts', range(2, 7)));
+      }
+    });
+
+    it('SC-2: a missing --diff-file path or --commit-msg-file path exits 2 with floor-guard: error:', () => {
+      const missing = path.join(scratch, 'does-not-exist');
+      for (const args of [['--diff-file', missing], ['--diff-file', fixture('clean'), '--commit-msg-file', missing]]) {
+        const r = guard(args);
+        expect(r.status, r.stderr).toBe(2);
+        expect(r.stderr).toMatch(/^floor-guard: error: /m);
+      }
+    });
+
+    it('SC-2: with no LOOPWORK_BASE_REF the base is the merge-base with main, not main itself', () => {
+      const repo = makeRepo('mut-merge-base');
+      git(repo, 'switch', '-q', '-c', 'feat');
+      git(repo, 'switch', '-q', 'main');
+      put(repo, 'packages/graph/src/m.test.ts', "expect(1).toBe(1);\n");
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '-q', '-m', 'main moves on');
+      git(repo, 'switch', '-q', 'feat');
+      put(repo, 'packages/graph/src/v.ts', `export const a = 1;\n${IGNORE}\n`);
+      expectFails(guard([], { cwd: repo }), 'suppression', [['packages/graph/src/v.ts', 2]]);
+    });
   });
 });

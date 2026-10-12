@@ -1,0 +1,11 @@
+diff --git a/CONSTRAINTS.md b/CONSTRAINTS.md
+index 438e86f..7e27eba 100644
+--- a/CONSTRAINTS.md
++++ b/CONSTRAINTS.md
+@@ -91,4 +91,6 @@
+ 
+ | ID | Rule | Path | Reason | Owner | Expires |
+ |---|---|---|---|---|---|
++
++EX-1 | no-console | packages/runtime/src/log.ts | legacy logger | owner | 2026-12-01
+ ## Notes

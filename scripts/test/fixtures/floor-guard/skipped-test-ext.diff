@@ -1,0 +1,63 @@
+diff --git a/packages/eventlog/test/a.spec.ts b/packages/eventlog/test/a.spec.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/packages/eventlog/test/a.spec.ts
+@@ -0,0 +1,1 @@
++it.skip('a', () => {});
+diff --git a/packages/eventlog/test/b.test.tsx b/packages/eventlog/test/b.test.tsx
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/packages/eventlog/test/b.test.tsx
+@@ -0,0 +1,1 @@
++it.skip('a', () => {});
+diff --git a/packages/eventlog/test/c.test.mts b/packages/eventlog/test/c.test.mts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/packages/eventlog/test/c.test.mts
+@@ -0,0 +1,1 @@
++it.skip('a', () => {});
+diff --git a/packages/eventlog/test/d.test.js b/packages/eventlog/test/d.test.js
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/packages/eventlog/test/d.test.js
+@@ -0,0 +1,1 @@
++it.skip('a', () => {});
+diff --git a/packages/eventlog/test/e.test.cjs b/packages/eventlog/test/e.test.cjs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/packages/eventlog/test/e.test.cjs
+@@ -0,0 +1,1 @@
++it.skip('a', () => {});
+diff --git a/packages/eventlog/test/f.spec.jsx b/packages/eventlog/test/f.spec.jsx
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/packages/eventlog/test/f.spec.jsx
+@@ -0,0 +1,1 @@
++it.skip('a', () => {});
+diff --git a/packages/eventlog/test/g.test.cts b/packages/eventlog/test/g.test.cts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/packages/eventlog/test/g.test.cts
+@@ -0,0 +1,1 @@
++it.skip('a', () => {});
+diff --git a/packages/eventlog/test/h.spec.mjs b/packages/eventlog/test/h.spec.mjs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/packages/eventlog/test/h.spec.mjs
+@@ -0,0 +1,1 @@
++it.skip('a', () => {});
+diff --git a/packages/eventlog/test/i.test.ts b/packages/eventlog/test/i.test.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/packages/eventlog/test/i.test.ts
+@@ -0,0 +1,1 @@
++xtest('a', () => {});

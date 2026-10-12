@@ -9,24 +9,41 @@
 # A non-empty `Test-Change-Reason:` line in the commit-message file excuses the skipped-test rule ONLY.
 #
 # Plain bash + git + awk (portable awk: no gawk extensions, no regex intervals). Rules, by file scope:
-#   code files (*.ts *.tsx *.js *.mjs *.cjs): suppression, stub, bind; stdout only under packages/*/src
-#   test files (*.test|spec.<code ext>):      skipped-test (skips, deleted file, net-removed `expect(` lines)
-#   every file:                               secret
-#   CONSTRAINTS.md:                           constraints-weakened (any removed/changed line, any new Exceptions row)
+#   code files (*.ts *.tsx *.mts *.cts *.js *.mjs *.cjs *.jsx): suppression, stub, bind; stdout only under packages/*/src
+#   test files (*.test|spec.<code ext>):      skipped-test (skips, deleted file, net-removed `expect(` / `expect.x(` lines)
+#   every file:                               secret (scripts/test/fixtures/floor-guard/<name>.diff exempt: documented fakes)
+#   CONSTRAINTS.md:                           constraints-weakened (any removed/changed line, any added line under Exceptions,
+#                                             any zero-context hunk)
 # ponytail: line-based regexes, not a parser (multi-line constructs and obfuscation are not caught); gitleaks and
 # review are the backstop. Upgrade to a real parser only if false negatives show up in practice.
 #
-# Fails CLOSED: if git cannot build the diff (bad base ref, not a repo, git missing) the exit is 2 with a
-# `floor-guard: error: ...` line, never 0. Exit 2 also covers usage errors. The guard's own diffs use --no-renames
-# (a rename is a delete + an add, so it cannot hide a CONSTRAINTS.md removal or a dropped *.test.ts) and
-# core.quotePath=false (non-ASCII names such as café.ts reach awk unquoted).
+# Fails CLOSED: if git cannot build the diff (bad base ref, not a repo, git missing) or a path is C-quoted by git
+# (names with tab, newline, double quote or backslash), the exit is 2 with a `floor-guard: error: ...` line, never 0.
+# Exit 2 also covers usage errors. The guard's own diffs use --no-renames (a rename is a delete + an add, so it cannot
+# hide a CONSTRAINTS.md removal or a dropped *.test.ts), --text --no-textconv (attributes cannot hide a diff), -U3
+# (diff.context / GIT_DIFF_OPTS cannot strip the Exceptions context) and core.quotePath=false (café.ts reaches awk
+# unquoted). Untracked files are added intent-to-add to a throwaway copy of the index; the real index is never written.
 #
-# Known limits (not detected; gitleaks in T08/T09 and review are the backstop):
-#   - paths git must still C-quote (names containing tab, newline, double quote or backslash) are skipped;
-#   - multi-line empty catch blocks, process['stdout'], a split `console` newline `.log`, it.skipIf / it.only,
-#     symlinked files, nested repos, and unquoted PASSWORD=value / api_key: value secrets;
-#   - when the base lacks CONSTRAINTS.md, the Exceptions table header and separator count as added rows. The real
-#     flow always sets LOOPWORK_BASE_REF to a base that has it.
+# Known limits (not detected, or accepted false positives; gitleaks in T08/T09, lint and review are the backstop):
+#   - semantic assertion weakening: only the net count of `expect(` / `expect.x(` lines is checked, so if (false) guards,
+#     expect(true).toBe(true), toBeDefined, helper edits and assert.* are not detected;
+#   - additions outside Exceptions that loosen the rules (for example a new Floor bullet) are allowed: review decides;
+#   - multi-line `listen({` objects without a literal `host:` line are not detected, and hosts must be string literals
+#     (host: process.env.HOST fails by design);
+#   - default mode diffs the working tree, not the index: a staged change reverted on disk is not seen;
+#   - secrets beyond the documented forms (URL credentials, private keys, AKIA/ASIA, ghp_, AIza, quoted
+#     password/passwd/secret/api_key values); unquoted PASSWORD=value is not seen;
+#   - stdout variants (process['stdout'], a split `console` newline `.log`) and packages/* code outside src/: the lint
+#     no-console rule is the backstop;
+#   - a @ts-expect-error with a one-character reason: the lint minimum description length is the backstop;
+#   - false positives, with workarounds: `host: stringify(x)` reads as a non-loopback host, a TODO or FIXME in
+#     a comment is a stub even when documenting history, `catch {}` in a template string is an empty catch (reword it);
+#   - LOOPWORK_BASE_REF=HEAD is allowed by design (it checks only uncommitted work);
+#   - weakening of config files (eslint, vitest, dependency-cruiser thresholds) is review's job, not the guard's;
+#   - symlinked files and nested repos (git reports them as a single entry);
+#   - lowercase `todo` comments and multi-line empty catch blocks;
+#   - when the base lacks CONSTRAINTS.md the whole new file is one zero-context hunk and fails constraints-weakened; the
+#     real flow always sets LOOPWORK_BASE_REF to a base that has it.
 set -euo pipefail
 
 usage() { echo "usage: floor-guard.sh [--diff-file <path>|-] [--commit-msg-file <path>]" >&2; exit 2; }
@@ -47,26 +64,34 @@ if [ -n "$msg_file" ]; then
   if grep -Eq '^Test-Change-Reason:[[:space:]]*[^[:space:]]' "$msg_file"; then excuse=1; fi
 fi
 
+tmp="$(mktemp -d)" || die "mktemp failed"
+trap 'rm -rf -- "$tmp"' EXIT
 # Resolve everything that can fail in the main shell (a failure inside the pipeline below must not read as "clean").
 if [ -z "$diff_file" ]; then
-  top="$(git rev-parse --show-toplevel)" || die "not a git repository (or git is missing)"
-  cd "$top"
+  out="$(git rev-parse --show-toplevel --git-path index)" || die "not a git repository (or git is missing)"
+  # --git-path is relative to the current directory: copy the index before cd.
+  cp -- "${out#*$'\n'}" "$tmp/index" || die "cannot copy the git index"
+  cd "${out%%$'\n'*}"
   base="${LOOPWORK_BASE_REF:-}"
   if [ -z "$base" ]; then
     base="$(git merge-base HEAD main)" || die "no base: set LOOPWORK_BASE_REF or create a main branch"
   fi
+  base="$(git rev-parse --verify --quiet --end-of-options "$base^{commit}")" || die "bad base ref: ${LOOPWORK_BASE_REF:-merge-base}"
 elif [ "$diff_file" != "-" ] && [ ! -r "$diff_file" ]; then
   die "cannot read $diff_file"
 fi
 
 # Every failure must propagate (callers run this under `||`, where set -e is off): a masked git error would read as "clean".
-gdiff() { git -c core.quotePath=false diff --no-color --no-ext-diff --no-renames --src-prefix=a/ --dst-prefix=b/ "$@"; }
+gdiff() { git -c core.quotePath=false diff --no-color --no-ext-diff --no-textconv --text -U3 --no-renames --src-prefix=a/ --dst-prefix=b/ "$@"; }
 emit_diff() {
   if [ -n "$diff_file" ]; then cat -- "$diff_file"; return; fi
-  gdiff "$base" -- || return 1
-  git ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do
-    gdiff --no-index -- /dev/null "$f" || [ $? -eq 1 ] || exit 1 # exit 1 = "differs"
-  done || return 1
+  # Untracked files join the diff as intent-to-add entries of a throwaway copy of the index (one git diff instead of
+  # one spawn per file; the real index is never written).
+  git ls-files --others --exclude-standard -z > "$tmp/untracked" || return 1
+  if [ -s "$tmp/untracked" ]; then
+    GIT_INDEX_FILE="$tmp/index" git -c advice.addEmbeddedRepo=false add -N --pathspec-from-file="$tmp/untracked" --pathspec-file-nul || return 1
+  fi
+  GIT_INDEX_FILE="$tmp/index" gdiff "$base" --
 }
 
 read -r -d '' PROG <<'AWK' || true
@@ -85,9 +110,15 @@ function endfile() {
 }
 function setfile(f) {
   file = f
-  code = f ~ /[.](ts|tsx|js|mjs|cjs)$/
-  istest = f ~ /[.](test|spec)[.](ts|tsx|js|mjs|cjs)$/
+  code = f ~ /[.]([mc]?ts|tsx|[mc]?js|jsx)$/
+  istest = f ~ /[.](test|spec)[.]([mc]?ts|tsx|[mc]?js|jsx)$/
   isstdout = code && f ~ /^packages\/[^\/]+\/src\//
+}
+# A real expect call: not in a comment-only line, a trailing comment or right after a quote (a string naming it).
+function hasexp(t,   s) {
+  if (t ~ /^[ \t]*([*]|\/[*]|\/\/)/) return 0
+  s = t; sub(/(^|[ \t;{})])\/\/.*$/, "", s); sub(/\/[*].*$/, "", s)
+  return s ~ /(^|[^A-Za-z0-9_'"`])expect([.][A-Za-z]+)?[(]/
 }
 function checkdeleted() { if (deleted && istest) viol("skipped-test", file, 1) }
 
@@ -96,25 +127,32 @@ function added(t, ln,   lt, s, i) {
   if (code) {
     # Suppressions and TODOs only count inside comments (// ... or /* ... or a ` * ` continuation), so a string or
     # test title that merely names them does not trip the guard.
-    if (t ~ /(\/\/|\/[*]|^[ \t]*[*]).*(@ts-ignore|eslint-disable|istanbul ignore|nosemgrep|gitleaks:allow|v8 ignore)/ ||
+    if (t ~ /(\/\/|\/[*]|^[ \t]*[*]).*(@ts-ignore|@ts-nocheck|eslint-disable|istanbul ignore|nosemgrep|gitleaks:allow|v8 ignore)/ ||
         t ~ /(\/\/|\/[*]|^[ \t]*[*]).*@ts-expect-error[ \t:]*([*][\/])?[ \t]*$/) viol("suppression", file, ln)
-    if (lt ~ /throw new error[(]["'`]not implemented/ || t ~ /catch[ \t]*([(][^)]*[)])?[ \t]*[{][ \t]*[}]/ ||
-        t ~ /(\/\/|\/[*]|^[ \t]*[*]).*(^|[^A-Za-z0-9_])TODO([^A-Za-z0-9_]|$)/) viol("stub", file, ln)
+    if (lt ~ /throw[ \t]+(new[ \t]+)?error[ \t]*[(][ \t]*["'`][^"'`]*not (yet )?implemented/ ||
+        t ~ /catch[ \t]*([(][^)]*[)])?[ \t]*[{][ \t]*(\/[*][^*]*[*]\/)?[ \t;]*[}]/ ||
+        t ~ /(\/\/|\/[*]|^[ \t]*[*]).*(^|[^A-Za-z0-9_])(TODO|FIXME)([^A-Za-z0-9_]|$)/) viol("stub", file, ln)
     if (t ~ /0[.]0[.]0[.]0/ || t ~ /["'`]::["'`]/) viol("bind", file, ln)
+    # listen() binds every interface unless a loopback host is given; a call that opens a multi-line object is left to
+    # the host: rule on its later lines. Unix sockets use listen({ path: ... }).
+    if (match(t, /[.]listen[(]/)) {
+      s = substr(t, RSTART + RLENGTH)
+      if (s !~ /^[ \t]*[{]?[ \t]*$/ && s !~ /["'`](127[.]0[.]0[.]1|localhost|::1)["'`]/ && s !~ /path[ \t]*:/) viol("bind", file, ln)
+    }
     # `host:` options must be loopback; a bare type annotation (`host: string`) is not an option.
-    if (match(t, /(^|[ \t{,(])["']?host["']?[?]?[ \t]*:/)) {
+    if (match(t, /(^|[ \t{,(])["']?host(name)?["']?[?]?[ \t]*:/)) {
       s = substr(t, RSTART + RLENGTH); sub(/^[ \t]+/, "", s)
-      if (s !~ /^["'`](127[.]0[.]0[.]1|localhost|::1)["'`]/ && s !~ /^string[ \t]*[;,}]?[ \t]*$/) viol("bind", file, ln)
+      if (s !~ /^["'`](127[.]0[.]0[.]1|localhost|::1)["'`]/ && s !~ /^string([^A-Za-z0-9_$]|$)/) viol("bind", file, ln)
     }
   }
   if (isstdout && (t ~ /console[.](log|info|debug)/ || t ~ /(^|[^A-Za-z0-9_])process[.]stdout/ || t ~ /globalThis[.]console/ ||
       t ~ /=[ \t]*console[ \t]*([;,)]|$)/)) viol("stdout", file, ln)
   if (istest) {
     if (t ~ /[.](skip|todo)[ \t]*[(.]/ || t ~ /(^|[^A-Za-z0-9_])x(it|describe|test)[(]/) viol("skipped-test", file, ln)
-    if (t ~ /(^|[^A-Za-z0-9_])expect[(]/) addexp++
+    if (hasexp(t)) addexp++
   }
-  if (file == "CONSTRAINTS.md" && inexc && t ~ /^[|]/) viol("constraints-weakened", file, ln)
-  if (file !~ /^scripts\/test\/fixtures\/floor-guard\//) secret(t, lt, ln)
+  if (file == "CONSTRAINTS.md" && inexc && t ~ /[^ \t\r]/) viol("constraints-weakened", file, ln)
+  if (file !~ /^scripts\/test\/fixtures\/floor-guard\/[^\/]+[.]diff$/) secret(t, lt, ln)
 }
 
 # Whole-diff exemption for secret: scripts/test/fixtures/floor-guard/ holds the guard's own fixture diffs, which
@@ -135,18 +173,22 @@ function context(t) {
 }
 
 BEGIN { expln = 1 }
+{ sub(/\r$/, "") }
 rold > 0 || rnew > 0 {
   c = substr($0, 1, 1); t = substr($0, 2)
   if (c == "+") { added(t, nline); context(t); nline++; rnew-- }
   else if (c == "-") {
     rold--
     if (file == "CONSTRAINTS.md") viol("constraints-weakened", file, oline)
-    if (istest && t ~ /(^|[^A-Za-z0-9_])expect[(]/) { if (!remexp) expln = nline; remexp++ }
+    if (istest && hasexp(t)) { if (!remexp) expln = nline; remexp++ }
     oline++
   } else if (c == " " || $0 == "") { context(t); nline++; oline++; rold--; rnew-- }
   next
 }
-/^diff --git / { endfile(); f = $0; sub(/^diff --git a\/.* b\//, "", f); setfile(f); next }
+/^diff --git / {
+  if ($0 ~ /"/) { print "floor-guard: error: cannot scan a C-quoted path: " substr($0, 12); err = 1 } # fail closed
+  endfile(); f = $0; sub(/^diff --git a\/.* b\//, "", f); setfile(f); next
+}
 /^deleted file mode/ { deleted = 1; checkdeleted(); next }
 /^--- / { prev = substr($0, 5); sub(/\t$/, "", prev); sub(/^a\//, "", prev); next }
 /^[+][+][+] / {
@@ -163,13 +205,14 @@ rold > 0 || rnew > 0 {
     oline = oa[1] + 0; rold = (oa[2] == "" ? 1 : oa[2] + 0)
     nline = na[1] + 0; rnew = (na[2] == "" ? 1 : na[2] + 0)
     inexc = 0
+    if (file == "CONSTRAINTS.md" && rold == 0) viol("constraints-weakened", file, nline) # zero-context insertion: cannot be placed
   }
   next
 }
-END { endfile(); exit bad ? 1 : 0 }
+END { endfile(); exit err ? 2 : bad ? 1 : 0 }
 AWK
 
-diff="$(emit_diff)" || die "cannot build the diff (git failed; bad base ref?)"
+emit_diff > "$tmp/diff" || die "cannot build the diff (git failed; bad base ref?)"
 status=0
-printf '%s\n' "$diff" | awk -v excuse="$excuse" -v allow='postgres://loopwork:loopwork@127.0.0.1:55432/loopwork_test' "$PROG" >&2 || status=$?
+awk -v excuse="$excuse" -v allow='postgres://loopwork:loopwork@127.0.0.1:55432/loopwork_test' "$PROG" "$tmp/diff" >&2 || status=$?
 exit "$status"
