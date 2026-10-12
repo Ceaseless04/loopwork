@@ -18,7 +18,8 @@
 //   - LOOPWORK_BASE_REF=HEAD measures only uncommitted work;
 //   - code outside coverage.include (scripts/lib/**, scripts/*.ts, scripts/*.js, packages/*/bin, apps/**) is never
 //     measured, so its changes are ignored (widening include is a plan decision: T03 pins it);
-//   - an absolute SF path spelled through a symlink of the repo top level does not match and is ignored.
+//   - an absolute SF path spelled through a symlink of the repo top level does not match and is ignored;
+//   - a hand-supplied --lcov whose SF records match no changed file passes at 0/0; the wrapper always gates a fresh vitest report.
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';

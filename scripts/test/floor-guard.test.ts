@@ -538,8 +538,8 @@ describe('SC-2 floor-guard.sh repairs 1-2', () => {
       ]);
     });
 
-    it('SC-2: every coverage-ignore hint the v8 converter honours is a suppression (c8, v8, istanbul, node:coverage, any whitespace or case)', () => {
-      expectFails(runFixture('suppression-coverage'), 'suppression', at('packages/graph/src/cov.ts', [1, 2, 3, 4, 5, 6, 7, 8]));
+    it('SC-2: every coverage-ignore hint the v8 converter honours is a suppression (c8, v8, istanbul, node:coverage, any whitespace or case, in a string or bare inside a block comment)', () => {
+      expectFails(runFixture('suppression-coverage'), 'suppression', at('packages/graph/src/cov.ts', [1, 2, 3, 4, 5, 6, 7, 8, 11, 13]));
     });
 
     it('SC-2: skipped-test is scanned in every test extension and for the x-prefixed test alias', () => {
