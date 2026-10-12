@@ -3,5 +3,6 @@ packages:
   - "apps/*"
   - "integrations/*"
   - "tests/*"
+# pnpm 12 hoists nothing by default; @types/node arrives transitively via @types/pg/vitest and is required for types:["node"].
 publicHoistPattern:
-  - "@types/*"
+  - "@types/node"
