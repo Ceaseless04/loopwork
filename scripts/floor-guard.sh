@@ -21,8 +21,9 @@
 # (names with tab, newline, double quote or backslash), the exit is 2 with a `floor-guard: error: ...` line, never 0.
 # Exit 2 also covers usage errors. The guard's own diffs use --no-renames (a rename is a delete + an add, so it cannot
 # hide a CONSTRAINTS.md removal or a dropped *.test.ts), --text --no-textconv (attributes cannot hide a diff), -U3
-# (diff.context / GIT_DIFF_OPTS cannot strip the Exceptions context) and core.quotePath=false (café.ts reaches awk
-# unquoted). Untracked files are added intent-to-add to a throwaway copy of the index; the real index is never written.
+# (diff.context cannot strip the Exceptions context; GIT_DIFF_OPTS is unset because it would override -U3) and
+# core.quotePath=false (café.ts reaches awk unquoted). Untracked files are added intent-to-add to a throwaway copy of the
+# index with --literal-pathspecs (a file named like pathspec magic cannot exclude another); the real index is never written.
 #
 # Known limits (not detected, or accepted false positives; gitleaks in T08/T09, lint and review are the backstop):
 #   - semantic assertion weakening: only the net count of `expect(` / `expect.x(` lines is checked, so if (false) guards,
@@ -40,8 +41,15 @@
 #     a comment is a stub even when documenting history, `catch {}` in a template string is an empty catch (reword it);
 #   - LOOPWORK_BASE_REF=HEAD is allowed by design (it checks only uncommitted work);
 #   - weakening of config files (eslint, vitest, dependency-cruiser thresholds) is review's job, not the guard's;
-#   - symlinked files and nested repos (git reports them as a single entry);
+#   - symlinked files and nested repos (git reports them as a single entry); a nested repo without a commit makes the
+#     guard exit 2, one with a commit prints git's embedded-repo warning on stderr;
 #   - lowercase `todo` comments and multi-line empty catch blocks;
+#   - `listen(` followed by a newline (any multi-line argument list) is not checked, only `host:` lines inside it are;
+#   - an `expect(` inside a string that follows other text on the line still counts as a real call;
+#   - new TypeError('Not implemented') and a NotImplementedError class are not detected as stubs (only Error is);
+#   - core.splitIndex leaves a sharedindex.* file in .git (the throwaway index is a copy, the shared part is not);
+#   - GIT_DIR exported without GIT_WORK_TREE, run from a subdirectory: git takes the cwd as the worktree and every
+#     file reads as added or deleted (a flood of false positives; unset GIT_DIR or export both);
 #   - when the base lacks CONSTRAINTS.md the whole new file is one zero-context hunk and fails constraints-weakened; the
 #     real flow always sets LOOPWORK_BASE_REF to a base that has it.
 set -euo pipefail
@@ -71,7 +79,7 @@ if [ -z "$diff_file" ]; then
   out="$(git rev-parse --show-toplevel --git-path index)" || die "not a git repository (or git is missing)"
   # --git-path is relative to the current directory: copy the index before cd.
   cp -- "${out#*$'\n'}" "$tmp/index" || die "cannot copy the git index"
-  cd "${out%%$'\n'*}"
+  cd "${out%%$'\n'*}" || die "cannot cd to the repository top level"
   base="${LOOPWORK_BASE_REF:-}"
   if [ -z "$base" ]; then
     base="$(git merge-base HEAD main)" || die "no base: set LOOPWORK_BASE_REF or create a main branch"
@@ -81,6 +89,8 @@ elif [ "$diff_file" != "-" ] && [ ! -r "$diff_file" ]; then
   die "cannot read $diff_file"
 fi
 
+# GIT_DIFF_OPTS=--unified=N overrides -U3 (the environment wins over the command line), so it must not reach git.
+unset GIT_DIFF_OPTS
 # Every failure must propagate (callers run this under `||`, where set -e is off): a masked git error would read as "clean".
 gdiff() { git -c core.quotePath=false diff --no-color --no-ext-diff --no-textconv --text -U3 --no-renames --src-prefix=a/ --dst-prefix=b/ "$@"; }
 emit_diff() {
@@ -89,7 +99,7 @@ emit_diff() {
   # one spawn per file; the real index is never written).
   git ls-files --others --exclude-standard -z > "$tmp/untracked" || return 1
   if [ -s "$tmp/untracked" ]; then
-    GIT_INDEX_FILE="$tmp/index" git -c advice.addEmbeddedRepo=false add -N --pathspec-from-file="$tmp/untracked" --pathspec-file-nul || return 1
+    GIT_INDEX_FILE="$tmp/index" git --literal-pathspecs -c advice.addEmbeddedRepo=false add -N --pathspec-from-file="$tmp/untracked" --pathspec-file-nul || return 1
   fi
   GIT_INDEX_FILE="$tmp/index" gdiff "$base" --
 }

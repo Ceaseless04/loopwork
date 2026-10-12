@@ -16,6 +16,10 @@ const script = path.join(root, 'scripts/floor-guard.sh');
 const fixtures = path.join(import.meta.dirname, 'fixtures/floor-guard');
 const scratch = mkdtempSync(path.join(tmpdir(), 'floor-guard-test-'));
 
+/** The caller's environment without any GIT_* variable (GIT_INDEX_FILE, GIT_DIR... when run inside a git hook). */
+const cleanEnv = (): Record<string, string | undefined> =>
+  Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')));
+
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 interface Run {
@@ -30,7 +34,7 @@ function guard(args: string[], opts: { cwd?: string; input?: string; env?: Recor
     input: opts.input,
     encoding: 'utf8',
     timeout: 20_000,
-    env: { ...process.env, LOOPWORK_BASE_REF: undefined, ...opts.env },
+    env: { ...cleanEnv(), LOOPWORK_BASE_REF: undefined, ...opts.env },
   });
   if (r.error) throw r.error; // e.g. ENOENT while scripts/floor-guard.sh does not exist or is not executable
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
@@ -98,6 +102,7 @@ function git(cwd: string, ...args: string[]): string {
   const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args], {
     cwd,
     encoding: 'utf8',
+    env: cleanEnv(),
   });
   expect(r.status, r.stderr).toBe(0);
   return r.stdout.trim();
@@ -371,7 +376,7 @@ describe('SC-2 floor-guard.sh against real git state', () => {
   });
 });
 
-// Repair cycle 1 (T04): hardening against git configuration, hidden files and hunk shapes.
+// Repair cycles 1 and 2 (T04): hardening against git configuration, hidden files and hunk shapes.
 describe('SC-2 floor-guard.sh repair 1', () => {
   const IGNORE = `// @ts-${'ignore'}`;
   const baseOf = (repo: string): Record<string, string> => ({ LOOPWORK_BASE_REF: git(repo, 'rev-parse', 'HEAD') });
@@ -587,6 +592,56 @@ describe('SC-2 floor-guard.sh repair 1', () => {
       git(repo, 'switch', '-q', 'feat');
       put(repo, 'packages/graph/src/v.ts', `export const a = 1;\n${IGNORE}\n`);
       expectFails(guard([], { cwd: repo }), 'suppression', [['packages/graph/src/v.ts', 2]]);
+    });
+  });
+
+  describe('R2: pathspec-looking names, diff-context overrides, GIT_* variables', () => {
+    it('SC-2: untracked files named like pathspec magic cannot hide another untracked violation', () => {
+      const repo = makeRepo('r2-pathspec');
+      put(repo, 'packages/graph/src/evil.ts', `export const a = 1;\n${IGNORE}\n`);
+      put(repo, `:(${'exclude'})*evil*`, 'x\n');
+      put(repo, `:!*evil*`, 'x\n');
+      expectFails(guard([], { cwd: repo, env: baseOf(repo) }), 'suppression', [['packages/graph/src/evil.ts', 2]]);
+    });
+
+    describe('-U3 is pinned against diff.context and GIT_DIFF_OPTS', () => {
+      // A bullet right after the "None. Format when needed" line: with 1 line of context the Exceptions heading is out of the hunk.
+      function exceptionsRepo(name: string): { repo: string; line: number } {
+        const repo = makeRepo(name);
+        const lines = readFileSync(path.join(root, 'CONSTRAINTS.md'), 'utf8').split('\n');
+        const idx = lines.findIndex((l) => l.startsWith('None. Format when needed'));
+        expect(idx).toBeGreaterThan(-1);
+        put(repo, 'CONSTRAINTS.md', lines.join('\n'));
+        git(repo, 'add', '-A');
+        git(repo, 'commit', '-q', '-m', 'constraints');
+        lines.splice(idx + 1, 0, '- a quiet extra exception');
+        put(repo, 'CONSTRAINTS.md', lines.join('\n'));
+        return { repo, line: idx + 2 };
+      }
+
+      it('SC-2: git config diff.context=1 cannot hide an added Exceptions bullet', () => {
+        const { repo, line } = exceptionsRepo('r2-context-config');
+        git(repo, 'config', 'diff.context', '1');
+        expectFails(guard([], { cwd: repo, env: baseOf(repo) }), 'constraints-weakened', [['CONSTRAINTS.md', line]]);
+      });
+
+      it('SC-2: GIT_DIFF_OPTS=--unified=1 cannot hide an added Exceptions bullet', () => {
+        const { repo, line } = exceptionsRepo('r2-context-env');
+        expectFails(guard([], { cwd: repo, env: { ...baseOf(repo), GIT_DIFF_OPTS: '--unified=1' } }), 'constraints-weakened', [['CONSTRAINTS.md', line]]);
+      });
+    });
+
+    it('SC-2: a GIT_INDEX_FILE in the caller environment reaches neither the test helpers nor the guard', () => {
+      const saved = process.env.GIT_INDEX_FILE;
+      process.env.GIT_INDEX_FILE = path.join(scratch, 'no-such-dir/bogus-index');
+      try {
+        const repo = makeRepo('r2-git-env');
+        put(repo, 'packages/graph/src/u.ts', `export const a = 1;\n${IGNORE}\n`);
+        expectFails(guard([], { cwd: repo, env: baseOf(repo) }), 'suppression', [['packages/graph/src/u.ts', 2]]);
+      } finally {
+        if (saved === undefined) delete process.env.GIT_INDEX_FILE;
+        else process.env.GIT_INDEX_FILE = saved;
+      }
     });
   });
 });
