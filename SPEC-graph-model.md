@@ -93,17 +93,24 @@ scopedId(...parts: string[]): string
 type ValidationError = { code: ErrorCode; message: string; node?: string; edge?: string; path: string /* JSON pointer into the flow */ }
 ```
 
+Parse/validate boundary: `parseFlow` checks structure and the JSON type of every field that is present. The semantic
+fields `budgets.maxIterations`, `budgets.maxDurationMs`, `concurrency`, `condition`, `maxAttempts` and `backoff.baseMs`
+may be absent or out of range in a parsed flow; `validateFlow` reports those (`E_MISSING_BUDGET`, `E_MISSING_EXIT`,
+`E_BAD_LIMIT`) and therefore reads them defensively. A flow built with `flow()` that contains `{ inferFrom }` is resolved
+by passing it through `parseFlow`. Schemas and `inferFrom` samples must be well-formed (exactly one union member, plain
+JSON values): `inferSchema`, `isAssignable` and `conformsTo` assume it.
+
 Error codes (stable; additive only):
 
 | Code | Raised when |
 |---|---|
-| `E_SHAPE` | not a Flow: missing/ill-typed fields, unsupported schema keyword, unknown `kind`/`frame` (parse stage) |
+| `E_SHAPE` | not a Flow (parse stage): missing/ill-typed fields; **unknown extra keys** on any closed object (flow, node, frame, body, budgets, backoff, edge, port ref); unsupported schema keyword, a schema that is not exactly one union member, empty `anyOf`/`enum`; unknown `kind`/`frame`; non-finite numbers or `undefined` values; `inferFrom` samples that are not plain JSON values; an `{ inferFrom }` that reaches `validateFlow` unresolved |
 | `E_DUPLICATE_ID` | node id repeated in a scope, or id contains `.` |
 | `E_UNKNOWN_NODE` / `E_UNKNOWN_PORT` | edge references a missing node or a port the node kind doesn't have |
 | `E_CYCLE` | the outer graph or any body has a cycle; message lists the cycle's node ids |
 | `E_MISSING_BUDGET` | frame lacks `maxIterations` or `maxDurationMs`, or either is not a positive integer |
 | `E_MISSING_EXIT` | `while`/`until` without `condition`; `retry` with `maxAttempts < 1`; frame body has no reachable path entry to exit |
-| `E_TYPE_MISMATCH` | an edge's `from` schema is not assignable to its `to` schema; `while`/`until` body output not assignable to body input (state loop) |
+| `E_TYPE_MISMATCH` | an edge's `from` schema is not assignable to its `to` schema; `while`/`until` body output not assignable to body input (state loop). An untyped (`{}`) source is assignable only to an untyped target, so `{}` to a typed port is a mismatch (ADR 0004) |
 | `E_UNCONNECTED_PORT` | a required input port has no incoming edge; a source/map/frame `out` with no outgoing edge **is allowed** (output is dropped) |
 | `E_BAD_LIMIT` | `concurrency` or `maxAttempts` not a positive integer; `backoff.baseMs` negative |
 | `E_NESTING_DEPTH` | frames nested deeper than 8 (guards the engine and the UI) |
