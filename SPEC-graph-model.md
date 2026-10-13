@@ -100,6 +100,15 @@ may be absent or out of range in a parsed flow; `validateFlow` reports those (`E
 by passing it through `parseFlow`. Schemas and `inferFrom` samples must be well-formed (exactly one union member, plain
 JSON values): `inferSchema`, `isAssignable` and `conformsTo` assume it.
 
+`parseFlow` never throws, and for JSON data (the output of `JSON.parse`, or plain objects built from it) it does bounded
+work: an array whose `length` is not a non-negative integer is `E_SHAPE` at `<path>/length`; once the work budget
+(5,000,000 units: one per value read or container visited, plus one per character of an error's path, message and node id beyond 256) is spent, or a 250,001st distinct error is
+found, parsing stops and the result is `ok: false` with one extra `E_SHAPE` at `''` saying which limit was hit. A huge
+sparse array, a shared-subtree "DAG bomb" or a flood of long error paths is therefore never reported as valid and
+finishes in a few seconds. When the error limit is hit, the errors kept are the first 250,000 in document order.
+Getters, Proxy traps and non-enumerable key blobs are outside this guarantee: they are never invoked for unknown keys
+and never make `parseFlow` throw, but their running time is not bounded.
+
 Error codes (stable; additive only):
 
 | Code | Raised when |
