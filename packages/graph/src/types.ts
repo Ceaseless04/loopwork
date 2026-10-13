@@ -43,7 +43,7 @@ export type Frame =
     };
 
 // Stable and additive only; scripts/test/spec-sync-graph-codes.test.ts keeps this equal to the table in SPEC-graph-model.md.
-export const ERROR_CODES = [
+export const ERROR_CODES = Object.freeze([
   'E_SHAPE',
   'E_DUPLICATE_ID',
   'E_UNKNOWN_NODE',
@@ -55,7 +55,7 @@ export const ERROR_CODES = [
   'E_UNCONNECTED_PORT',
   'E_BAD_LIMIT',
   'E_NESTING_DEPTH',
-] as const;
+] as const);
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
 // path is a JSON pointer into the flow
