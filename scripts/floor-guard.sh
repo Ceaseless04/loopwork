@@ -29,6 +29,7 @@
 #   - semantic assertion weakening: only the net count of `expect(` / `expect.x(` lines is checked, so if (false) guards,
 #     expect(true).toBe(true), toBeDefined, helper edits and assert.* are not detected;
 #   - additions outside Exceptions that loosen the rules (for example a new Floor bullet) are allowed: review decides;
+#   - the bind rule covers code files only; YAML port mappings are pinned by scripts/test/compose.test.ts (and, later, scripts/test/ci-workflow.test.ts);
 #   - multi-line `listen({` objects without a literal `host:` line are not detected, and hosts must be string literals
 #     (host: process.env.HOST fails by design);
 #   - default mode diffs the working tree, not the index: a staged change reverted on disk is not seen;
