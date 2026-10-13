@@ -107,6 +107,7 @@ describe('GM-2: ERROR_CODES', () => {
       'E_NESTING_DEPTH',
     ]);
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length);
+    expect(Object.isFrozen(ERROR_CODES)).toBe(true);
   });
 
   it('GM-2: ErrorCode is the union of ERROR_CODES, and the result types carry it', () => {
@@ -179,23 +180,6 @@ describe('T10: IR types', () => {
     expect(true).toBe(true);
   });
 
-  // Written out from the Schema block in SPEC-graph-model.md, NOT derived from `Schema`: it must stay independent of
-  // types.ts, otherwise a member dropped from types.ts would drop out of both sides of the comparison and still pass.
-  type SchemaSpecCopy =
-    | { type: 'null' | 'boolean' | 'number' | 'integer' | 'string' }
-    | { type: 'array'; items: SchemaSpecCopy }
-    | { type: 'object'; properties: Record<string, SchemaSpecCopy>; required?: string[]; additionalProperties?: boolean }
-    | { anyOf: SchemaSpecCopy[] }
-    | { enum: JsonValue[] }
-    | Nothing; // "any" (`{}` in the spec)
-
-  it('T10: Schema and PortSpec are exactly the spec unions, member by member', () => {
-    // `Fits` against Schema is vacuous (the any-schema member accepts any object), so pin the whole union with Equal.
-    pin<Equal<Schema, SchemaSpecCopy>>(true);
-    pin<Equal<PortSpec, SchemaSpecCopy | { inferFrom: JsonValue[] }>>(true);
-    expect(true).toBe(true);
-  });
-
   it('T10: JsonValue accepts nested JSON and rejects non-JSON values', () => {
     const nested: JsonValue = { a: [1, 2.5, null, true, 'x', { b: [] }], c: {} };
     expect(JSON.parse(JSON.stringify(nested))).toEqual(nested);
@@ -242,6 +226,58 @@ describe('T10: IR types', () => {
     pin<Not<Fits<{ version: 1; id: string; name: string; nodes: Record<string, FlowNode> }, Flow>>>(true);
     pin<Not<Fits<{ nodes: Record<string, FlowNode>; edges: Edge[]; entry: PortRef }, Body>>>(true);
     expect(true).toBe(true);
+  });
+});
+
+// The IR block of SPEC-graph-model.md copied verbatim (names suffixed `S`), independent of types.ts, so a field added,
+// dropped or retyped on either side breaks one of the Equal pins below.
+type JsonValueS = null | boolean | number | string | JsonValueS[] | { [k: string]: JsonValueS };
+type SchemaS =
+  | { type: 'null' | 'boolean' | 'number' | 'integer' | 'string' }
+  | { type: 'array'; items: SchemaS }
+  | { type: 'object'; properties: Record<string, SchemaS>; required?: string[]; additionalProperties?: boolean }
+  | { anyOf: SchemaS[] }
+  | { enum: JsonValueS[] }
+  | Nothing;
+type PortSpecS = SchemaS | { inferFrom: JsonValueS[] };
+type FlowS = { version: 1; id: string; name: string; nodes: Record<string, FlowNodeS>; edges: EdgeS[] };
+type EdgeS = { from: PortRefS; to: PortRefS };
+type PortRefS = { node: string; port: string };
+type FlowNodeS =
+  | { kind: 'source'; fn: string; params?: JsonValueS; out: PortSpecS }
+  | { kind: 'map'; fn: string; params?: JsonValueS; in: PortSpecS; out: PortSpecS; concurrency?: number }
+  | { kind: 'sink'; fn: string; params?: JsonValueS; in: PortSpecS; concurrency?: number }
+  | FrameS;
+type BudgetsS = { maxIterations: number; maxDurationMs: number; maxCostUsd?: number; maxTokens?: number };
+type BodyS = { nodes: Record<string, FlowNodeS>; edges: EdgeS[]; entry: PortRefS; exit: PortRefS };
+type FrameS =
+  | { kind: 'frame'; frame: 'foreach'; body: BodyS; budgets: BudgetsS; concurrency: number; in: PortSpecS; out: PortSpecS }
+  | { kind: 'frame'; frame: 'while' | 'until'; body: BodyS; budgets: BudgetsS; condition: string; in: PortSpecS; out: PortSpecS }
+  | { kind: 'frame'; frame: 'retry'; body: BodyS; budgets: BudgetsS; maxAttempts: number;
+      backoff: { kind: 'fixed' | 'exponential'; baseMs: number }; onExhausted: 'fail-run' | 'emit-error'; in: PortSpecS; out: PortSpecS };
+
+describe('T10: the whole IR equals the spec copy', () => {
+  it('T10: every IR type is Equal to its verbatim spec copy', () => {
+    pin<Equal<JsonValue, JsonValueS>>(true);
+    pin<Equal<Schema, SchemaS>>(true);
+    pin<Equal<PortSpec, PortSpecS>>(true);
+    pin<Equal<Flow, FlowS>>(true);
+    pin<Equal<Edge, EdgeS>>(true);
+    pin<Equal<PortRef, PortRefS>>(true);
+    pin<Equal<FlowNode, FlowNodeS>>(true);
+    pin<Equal<Budgets, BudgetsS>>(true);
+    pin<Equal<Body, BodyS>>(true);
+    pin<Equal<Frame, FrameS>>(true);
+    expect(true).toBe(true);
+  });
+
+  it('T10: the type-test helpers reject what they must', () => {
+    pin<Not<Equal<{ a?: number }, { a: number }>>>(true);
+    pin<Not<Equal<string, 'x'>>>(true);
+    pin<Not<Fits<string, 'x'>>>(true);
+    pin<Equal<Not<true>, false>>(true);
+    const pinIsStrict: Equal<Parameters<typeof pin>[0], true> = true; // a pin that accepted `false` would make every pin vacuous
+    expect(pinIsStrict).toBe(true);
   });
 });
 
