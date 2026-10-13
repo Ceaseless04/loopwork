@@ -7,12 +7,9 @@ const root = path.resolve(import.meta.dirname, '../..');
 // The compose file is checked as text (no YAML dependency): comments are dropped first, so a pin written only in a
 // comment never counts, then each pin looks at the remaining lines. Values are compared exactly.
 
-/** Non-blank lines with `# ...` comments removed (YAML needs whitespace or line start before `#`). */
+/** Non-blank lines that are not full-line `# ...` comments (a trailing `#` may sit inside a quoted string, so it stays). */
 function activeLines(text: string): string[] {
-  return text
-    .split(/\r?\n/)
-    .map((l) => l.replace(/(^|\s)#.*$/, '').trimEnd())
-    .filter((l) => l.trim() !== '');
+  return text.split(/\r?\n/).filter((l) => !/^\s*(#|$)/.test(l));
 }
 
 const indentOf = (l: string): number => l.length - l.trimStart().length;
@@ -105,7 +102,16 @@ function failedPins(text: string): string[] {
 
 const anyHost = ['0', '0', '0', '0'].join('.');
 
-const good = `# usage notes live here, e.g. image postgres:16 on 127.0.0.1:55432
+// The exact intended file (LF). The pins above only diagnose; this is the backstop for everything they cannot see.
+const good = `# Throwaway Postgres for the pg test project (\`pnpm test:pg\`). Published on loopback only.
+#
+# Usage:
+#   docker compose -p loopwork-test -f docker-compose.test.yml up -d --wait
+#   LOOPWORK_TEST_DATABASE_URL=postgres://loopwork:loopwork@127.0.0.1:55432/loopwork_test pnpm test:pg
+#   docker compose -p loopwork-test -f docker-compose.test.yml down -v
+#
+# Always pass \`-p loopwork-test\`: it beats COMPOSE_PROJECT_NAME and .env, so \`down -v\` cannot hit another stack.
+# The data dir is tmpfs: nothing survives \`down\` (or a container restart).
 services:
   postgres:
     image: postgres:16
@@ -128,6 +134,7 @@ describe('SC-6 compose file', () => {
   it('SC-6: compose file pins Postgres 16 on 127.0.0.1:55432 with db/user/password loopwork_test/loopwork/loopwork', () => {
     const text = readFileSync(path.join(root, 'docker-compose.test.yml'), 'utf8');
     expect(failedPins(text)).toEqual([]);
+    expect(text.replace(/\r\n/g, '\n')).toBe(good);
   });
 
   it('SC-6: the text pins accept the intended file and reject every mutation of it', () => {
