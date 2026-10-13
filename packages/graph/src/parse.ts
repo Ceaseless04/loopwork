@@ -51,7 +51,8 @@ import type { Flow, JsonValue, ParseResult, ValidationError } from './types.js';
  *     one (an array whose `length` alone would exceed what is left is rejected before it is read, so a sparse array of
  *     length 1e8 or 2^32-1, a Proxy claiming a huge `length`, or a shared (DAG) structure that expands exponentially
  *     cost almost nothing). What is KEPT counts too: each recorded error costs its path, message and node characters
- *     beyond the first 256, so an error at every level of a deep input or under a huge key cannot grow without limit.
+ *     beyond the first 256, and so does every object key read, beyond 256 characters, so an error at every level of a deep
+ *     input, a huge key under a shared (DAG) structure and a huge id under many errors cannot grow without limit.
  *     Past the limit parsing stops and the result carries exactly one more error, at '', 'input too large'.
  *   MAX_ERRORS = 250,000: the 250,001st distinct error is not recorded; parsing stops and the result carries exactly
  *     one more error, at '', 'too many errors'. The first 250,000 found stay, sorted as usual. They are found in
@@ -87,7 +88,7 @@ type At = { c: Ctx; f: Fields; path: string; node: string | undefined; out: Rec 
 
 const MAX_WORK = 5_000_000;
 const MAX_ERRORS = 250_000;
-const FREE_TEXT = 256; // characters of one error (path, message, node) that cost nothing; the rest counts as work
+const FREE_TEXT = 256; // characters of one error (path, message, node) or one key that cost nothing; the rest counts as work
 const WORK_LIMIT = `input too large to parse (work limit ${MAX_WORK})`;
 const ERROR_LIMIT = `too many errors (limit ${MAX_ERRORS}); remaining problems not reported`;
 
@@ -126,7 +127,7 @@ const OBJECT_KEYS = only('type', 'properties', 'required', 'additionalProperties
 const TYPED_KEYS = only('type', 'items', 'properties', 'required', 'additionalProperties'); // the type is unresolved
 
 const isString = (v: unknown): boolean => typeof v === 'string';
-const isCount = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v);
+const isFiniteNumber = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v);
 const isBoolean = (v: unknown): boolean => typeof v === 'boolean';
 const oneOf =
   (...words: string[]) =>
@@ -185,7 +186,7 @@ const put = (to: Out, key: string | number, value: unknown): void => {
 };
 
 const read = (c: Ctx, o: object, key: string | number, path: string, node: string | undefined): unknown => {
-  tick(c);
+  tick(c, 1 + (typeof key === 'string' ? Math.max(0, key.length - FREE_TEXT) : 0)); // a key is looked up, hashed and escaped per visit
   try {
     return Reflect.get(o, key);
   } catch {
@@ -264,7 +265,7 @@ const takeRef = (at: At, key: string): void => {
 // ---------------------------------------------------------------------------------------------------------------------
 
 const placeJson = (c: Ctx, to: Out, key: string | number, v: unknown, path: string, node: string | undefined): void => {
-  if (v === null || typeof v === 'string' || typeof v === 'boolean' || isCount(v)) return put(to, key, v);
+  if (v === null || typeof v === 'string' || typeof v === 'boolean' || isFiniteNumber(v)) return put(to, key, v);
   const kind = kindOf(v);
   if (kind === 'other') fail(c, path, node, 'not a JSON value');
   else if (c.active.has(v as object)) fail(c, path, node, 'cyclic structure');
@@ -382,10 +383,10 @@ const objectSchema = (at: At): void => {
       inOrder(c, mark);
     }
   }
-  if (f.has('required')) {
-    const l = listOf(at, 'required');
-    if (l !== undefined) put(out, 'required', l.list);
-    l?.els.forEach((el, i) => (typeof el === 'string' ? l.list.push(el) : fail(c, `${l.path}/${i}`, node, 'expected a string')));
+  const required = f.has('required') ? listOf(at, 'required') : undefined;
+  if (required !== undefined) {
+    put(out, 'required', required.list);
+    required.els.forEach((el, i) => (typeof el === 'string' ? required.list.push(el) : fail(c, `${required.path}/${i}`, node, 'expected a string')));
   }
   take(at, 'additionalProperties', false, isBoolean, 'a boolean');
 };
@@ -478,18 +479,18 @@ const takeFrame = (at: At): void => {
     takeRef(body, 'exit');
   }
   const budgets = sub(at, 'budgets', BUDGET_KEYS);
-  if (budgets !== undefined) for (const key of BUDGET_KEYS) take(budgets, key, false, isCount, 'a finite number');
+  if (budgets !== undefined) for (const key of BUDGET_KEYS) take(budgets, key, false, isFiniteNumber, 'a finite number');
   takePort(at, 'in');
   takePort(at, 'out');
-  if (variant === 'foreach') take(at, 'concurrency', false, isCount, 'a finite number');
+  if (variant === 'foreach') take(at, 'concurrency', false, isFiniteNumber, 'a finite number');
   else if (variant === 'while' || variant === 'until') take(at, 'condition', false, isString, 'a string');
   else if (variant === 'retry') {
-    take(at, 'maxAttempts', false, isCount, 'a finite number');
+    take(at, 'maxAttempts', false, isFiniteNumber, 'a finite number');
     take(at, 'onExhausted', true, oneOf('fail-run', 'emit-error'), 'one of fail-run, emit-error');
     const backoff = sub(at, 'backoff', BACKOFF_KEYS);
     if (backoff === undefined) return;
     take(backoff, 'kind', true, oneOf('fixed', 'exponential'), 'one of fixed, exponential');
-    take(backoff, 'baseMs', false, isCount, 'a finite number');
+    take(backoff, 'baseMs', false, isFiniteNumber, 'a finite number');
   }
 };
 
@@ -509,8 +510,9 @@ const runNode = (c: Ctx, { v, out, path, node }: Extract<Task, { k: 'node' }>): 
     if (f.has('params')) placeJson(c, out, 'params', f.get('params'), `${path}/params`, node);
     if (kind !== 'source') takePort(at, 'in');
     if (kind !== 'sink') takePort(at, 'out');
-    if (kind !== 'source') take(at, 'concurrency', false, isCount, 'a finite number');
-  } else fail(c, `${path}/kind`, node, 'expected one of source, map, sink, frame');
+    if (kind !== 'source') take(at, 'concurrency', false, isFiniteNumber, 'a finite number');
+  } else if (f.has('kind')) fail(c, `${path}/kind`, node, 'expected one of source, map, sink, frame');
+  else missing(at, 'kind');
 };
 
 const step = (c: Ctx, t: Task): void => {
@@ -522,8 +524,6 @@ const step = (c: Ctx, t: Task): void => {
   else if (t.k === 'exit') c.active.delete(t.v);
   else t.run();
 };
-
-const compare = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 export function parseFlow(input: unknown): ParseResult {
   const c: Ctx = { errors: [], seen: new Set(), fails: 0, stack: [], active: new Set(), work: 0, halt: undefined };
@@ -540,5 +540,6 @@ export function parseFlow(input: unknown): ParseResult {
   for (let t = c.stack.pop(); t !== undefined && c.halt === undefined; t = c.stack.pop()) step(c, t);
   if (c.halt !== undefined) c.errors.push({ code: 'E_SHAPE', message: c.halt, path: '' });
   if (c.errors.length === 0) return { ok: true, flow: holder['flow'] as Flow };
-  return { ok: false, errors: c.errors.sort((a, b) => compare(a.path, b.path) || compare(a.code, b.code)) };
+  // paths are unique, so two are never equal
+  return { ok: false, errors: c.errors.sort((a, b) => (a.path < b.path ? -1 : 1)) };
 }

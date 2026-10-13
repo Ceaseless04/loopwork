@@ -1679,4 +1679,42 @@ describe('T12: bounded work and bounded error count', () => {
       expect(errors.map((e) => e.path)).toEqual([`/nodes/x/${word}`, '/nodes/x/kind'].sort());
     }
   });
+
+  // --- the length of a key is work too ----------------------------------------------------------------------------------
+
+  it('T12: a shared (DAG) structure with a 1,000,000-character key is one work-limit error', () => {
+    let params: Rec = { ['a'.repeat(1_000_000)]: 1 };
+    for (let i = 0; i < 19; i++) params = { a: params, b: params };
+    const errors = withinSeconds(5, () => outcome(edit(validFlow(), [...SRC, 'params'], params)));
+    expect(errors).toHaveLength(1);
+    limitError(errors, TOO_LARGE);
+  }, 20_000);
+
+  it('T12: keys up to 256 characters are free: 21,000 keys of 256 characters parse', () => {
+    const params = Object.fromEntries(Array.from({ length: 21_000 }, (_, i) => [String(i).padStart(256, 'k'), i]));
+    const r = parseFlow(edit(validFlow(), [...SRC, 'params'], params));
+    expect(r.ok).toBe(true);
+  }, 20_000);
+
+  // --- a node whose keys cannot be read -------------------------------------------------------------------------------
+
+  it('T12: a node whose ownKeys trap throws is E_SHAPE at the node', () => {
+    const node = new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error('boom');
+        },
+      },
+    );
+    const r = parseFlow({ version: 1, id: 'f', name: 'f', nodes: { x: node }, edges: [] });
+    expect(r.ok ? [] : r.errors.map((e) => [e.path, e.node])).toEqual([['/nodes/x', 'x']]);
+  });
+
+  it('T12: a node without kind has a missing kind, an unknown kind is an expected-one-of error', () => {
+    const at = (node: Rec): ValidationError[] => outcome({ version: 1, id: 'f', name: 'f', nodes: { x: node }, edges: [] });
+    expect(at({})).toMatchObject([{ path: '/nodes/x/kind', message: 'missing field' }]);
+    expect(at({ kind: 'bogus' })).toMatchObject([{ path: '/nodes/x/kind', message: expect.stringContaining('expected one of') as unknown }]);
+    expect(at({ kind: undefined })).toMatchObject([{ path: '/nodes/x/kind', message: expect.stringContaining('expected one of') as unknown }]);
+  });
 });
