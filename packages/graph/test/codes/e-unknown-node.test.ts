@@ -36,8 +36,8 @@ describe('GM-2: E_UNKNOWN_NODE', () => {
     ['outer from', outer([e('zz', 'out', 'b', 'in')]), '/edges/0/from/node', 'zz.out->b.in', 'zz'],
     ['outer to', outer([e('a', 'out', 'zz', 'in')]), '/edges/0/to/node', 'a.out->zz.in', 'zz'],
     ['outer to Object.prototype name', outer([e('a', 'out', 'toString', 'in')]), '/edges/0/to/node', 'a.out->toString.in', 'toString'],
-    ['body from', inBody([e('zz', 'out', 'y', 'in')]), '/nodes/f/body/edges/0/from/node', 'f.zz.out->f.y.in', 'f.zz'],
-    ['body to', inBody([e('x', 'out', 'zz', 'in')]), '/nodes/f/body/edges/0/to/node', 'f.x.out->f.zz.in', 'f.zz'],
+    ['body from', inBody([e('zz', 'out', 'y', 'in'), e('x', 'out', 'y', 'in')]), '/nodes/f/body/edges/0/from/node', 'f.zz.out->f.y.in', 'f.zz'],
+    ['body to', inBody([e('x', 'out', 'zz', 'in'), e('x', 'out', 'y', 'in')]), '/nodes/f/body/edges/0/to/node', 'f.x.out->f.zz.in', 'f.zz'],
     ['body entry', inBody([], { node: 'zz', port: 'in' }), '/nodes/f/body/entry/node', '', undefined],
     ['body exit', inBody([], undefined, { node: 'zz', port: 'out' }), '/nodes/f/body/exit/node', '', undefined],
   ];
