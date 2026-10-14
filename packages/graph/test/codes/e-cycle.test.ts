@@ -1,15 +1,15 @@
-import { describe, expect, it } from "vitest";
-import { validateWired } from "../helpers.js";
-import type { Edge, Flow, FlowNode } from "../../src/types.js";
+import { describe, expect, it } from 'vitest';
+import { validateWired } from '../helpers.js';
+import type { Edge, Flow, FlowNode } from '../../src/types.js';
 
 // GM-2/GM-4, E_CYCLE: a directed cycle among a scope's nodes. One error per scope with a cycle, path = the scope pointer,
 // message `cycle: a -> b -> a` (scoped ids, first cycle found). A body cycle is not re-reported at the outer scope.
 
-const str = { type: "string" } as const;
-const map: FlowNode = { kind: "map", fn: "f", in: str, out: str };
+const str = { type: 'string' } as const;
+const map: FlowNode = { kind: 'map', fn: 'f', in: str, out: str };
 const e = (from: string, to: string): Edge => ({
-  from: { node: from, port: "out" },
-  to: { node: to, port: "in" },
+  from: { node: from, port: 'out' },
+  to: { node: to, port: 'in' },
 });
 const frame = (
   nodes: Record<string, FlowNode>,
@@ -17,23 +17,23 @@ const frame = (
   entry: string,
   exit: string,
 ): FlowNode => ({
-  kind: "frame",
-  frame: "while",
+  kind: 'frame',
+  frame: 'while',
   body: {
     nodes,
     edges,
-    entry: { node: entry, port: "in" },
-    exit: { node: exit, port: "out" },
+    entry: { node: entry, port: 'in' },
+    exit: { node: exit, port: 'out' },
   },
   budgets: { maxIterations: 10, maxDurationMs: 1000 },
-  condition: "c",
+  condition: 'c',
   in: str,
   out: str,
 });
 const flow = (nodes: Record<string, FlowNode>, edges: Edge[]): Flow => ({
   version: 1,
-  id: "f",
-  name: "f",
+  id: 'f',
+  name: 'f',
   nodes,
   edges,
 });
@@ -44,24 +44,24 @@ const cycles = (f: Flow) => {
   return r.ok ? [] : r.errors.map((x) => [x.code, x.path, x.message, x.node]);
 };
 
-describe("GM-4: E_CYCLE", () => {
+describe('GM-4: E_CYCLE', () => {
   const rows: [string, Flow, string, string, string][] = [
     [
-      "a cycle in the outer graph yields E_CYCLE",
-      flow({ a: map, b: map }, [e("a", "b"), e("b", "a")]),
-      "",
-      "cycle: a -> b -> a",
-      "a",
+      'a cycle in the outer graph yields E_CYCLE',
+      flow({ a: map, b: map }, [e('a', 'b'), e('b', 'a')]),
+      '',
+      'cycle: a -> b -> a',
+      'a',
     ],
     [
-      "a cycle in a body yields E_CYCLE",
+      'a cycle in a body yields E_CYCLE',
       flow(
-        { f: frame({ x: map, y: map }, [e("x", "y"), e("y", "x")], "x", "y") },
+        { f: frame({ x: map, y: map }, [e('x', 'y'), e('y', 'x')], 'x', 'y') },
         [],
       ),
-      "/nodes/f/body",
-      "cycle: f.x -> f.y -> f.x",
-      "f.x",
+      '/nodes/f/body',
+      'cycle: f.x -> f.y -> f.x',
+      'f.x',
     ],
     [
       "a cycle across a nested frame's body yields E_CYCLE",
@@ -71,96 +71,121 @@ describe("GM-4: E_CYCLE", () => {
             {
               g: frame(
                 { x: map, y: map },
-                [e("x", "y"), e("y", "x")],
-                "x",
-                "y",
+                [e('x', 'y'), e('y', 'x')],
+                'x',
+                'y',
               ),
             },
             [],
-            "g",
-            "g",
+            'g',
+            'g',
           ),
         },
         [],
       ),
-      "/nodes/f/body/nodes/g/body",
-      "cycle: f.g.x -> f.g.y -> f.g.x",
-      "f.g.x",
+      '/nodes/f/body/nodes/g/body',
+      'cycle: f.g.x -> f.g.y -> f.g.x',
+      'f.g.x',
     ],
   ];
 
-  it.each(rows)("GM-4: %s", (_name, f, path, message, node) => {
-    expect(cycles(f)).toEqual([["E_CYCLE", path, message, node]]);
+  it.each(rows)('GM-4: %s', (_name, f, path, message, node) => {
+    expect(cycles(f)).toEqual([['E_CYCLE', path, message, node]]);
   });
 
-  it("GM-4: the same topology expressed with a frame validates", () => {
+  it('GM-4: the same topology expressed with a frame validates', () => {
     // a -> b -> a as a back-edge fails; the loop as a while frame (body a -> b) has no back-edge and passes.
     expect(
-      validateWired(flow({ a: map, b: map }, [e("a", "b"), e("b", "a")])).ok,
+      validateWired(flow({ a: map, b: map }, [e('a', 'b'), e('b', 'a')])).ok,
     ).toBe(false);
     expect(
       validateWired(
-        flow({ f: frame({ a: map, b: map }, [e("a", "b")], "a", "b") }, []),
+        flow({ f: frame({ a: map, b: map }, [e('a', 'b')], 'a', 'b') }, []),
       ).ok,
     ).toBe(true);
   });
 
-  it("GM-4: a 200k-node chain does not overflow the stack and is valid", () => {
-    const n = 200_000;
+  const chain = (n: number): Flow => {
     const nodes: Record<string, FlowNode> = {};
     const edges: Edge[] = [];
     for (let i = 0; i < n; i++) {
       nodes[`n${i}`] = map;
       if (i > 0) edges.push(e(`n${i - 1}`, `n${i}`));
     }
-    expect(validateWired(flow(nodes, edges)).ok).toBe(true);
-  }, 30_000); // linear, but four 200k-node passes exceed the 5s default on slow machines
+    return flow(nodes, edges);
+  };
+
+  // Correctness only (no wall-clock assertion): an iterative DFS must not overflow the stack on a 200k-deep chain.
+  it('GM-4: a 200k-node chain does not overflow the stack and is valid', () => {
+    expect(validateWired(chain(200_000)).ok).toBe(true);
+  }, 60_000);
+
+  // Scale-free guard instead of an absolute budget (which flakes under load): time a 100k chain against a 10k chain, each
+  // as the best of up to three rounds. Linear is ~10x; an O(n^2) scan is ~100x. The 40x limit separates them with wide margin.
+  it('GM-4: cycle detection time grows linearly with the chain length', () => {
+    const small = chain(10_000);
+    const big = chain(100_000);
+    const time = (f: Flow): number => {
+      const start = performance.now();
+      validateWired(f);
+      return performance.now() - start;
+    };
+    validateWired(small); // warm-up
+    let bestSmall = Infinity;
+    let bestBig = Infinity;
+    for (let i = 0; i < 3; i++) {
+      bestSmall = Math.min(bestSmall, time(small));
+      bestBig = Math.min(bestBig, time(big));
+      if (bestBig / Math.max(bestSmall, 5) <= 40) return;
+    }
+    throw new Error(`chain validation grows faster than linearly: ${Math.round(bestBig)} ms for 100k vs ${Math.round(bestSmall)} ms for 10k`);
+  }, 60_000);
 });
 
-describe("GM-2: E_CYCLE", () => {
-  it("GM-2: E_CYCLE a self-loop edge is a cycle", () => {
-    expect(cycles(flow({ a: map }, [e("a", "a")]))).toEqual([
-      ["E_CYCLE", "", "cycle: a -> a", "a"],
+describe('GM-2: E_CYCLE', () => {
+  it('GM-2: E_CYCLE a self-loop edge is a cycle', () => {
+    expect(cycles(flow({ a: map }, [e('a', 'a')]))).toEqual([
+      ['E_CYCLE', '', 'cycle: a -> a', 'a'],
     ]);
   });
 
-  it("GM-2: E_CYCLE a body cycle is not reported again at the outer scope", () => {
-    const f = flow({ f: frame({ x: map }, [e("x", "x")], "x", "x") }, []);
-    expect(cycles(f).map((x) => x[1])).toEqual(["/nodes/f/body"]);
+  it('GM-2: E_CYCLE a body cycle is not reported again at the outer scope', () => {
+    const f = flow({ f: frame({ x: map }, [e('x', 'x')], 'x', 'x') }, []);
+    expect(cycles(f).map((x) => x[1])).toEqual(['/nodes/f/body']);
   });
 
-  it("GM-2: E_CYCLE a lead-in node is not part of the reported cycle", () => {
+  it('GM-2: E_CYCLE a lead-in node is not part of the reported cycle', () => {
     expect(
       cycles(
         flow({ r: map, a: map, b: map }, [
-          e("r", "a"),
-          e("a", "b"),
-          e("b", "a"),
+          e('r', 'a'),
+          e('a', 'b'),
+          e('b', 'a'),
         ]),
       ).map((x) => x[2]),
-    ).toEqual(["cycle: a -> b -> a"]);
+    ).toEqual(['cycle: a -> b -> a']);
   });
 
-  it("GM-2: E_CYCLE a node with several out-edges still finds the cycle", () => {
+  it('GM-2: E_CYCLE a node with several out-edges still finds the cycle', () => {
     expect(
       cycles(
         flow({ a: map, s: map, b: map }, [
-          e("a", "s"),
-          e("a", "b"),
-          e("b", "a"),
+          e('a', 's'),
+          e('a', 'b'),
+          e('b', 'a'),
         ]),
       ).map((x) => x[2]),
-    ).toEqual(["cycle: a -> b -> a"]);
+    ).toEqual(['cycle: a -> b -> a']);
   });
 
-  it("GM-2: E_CYCLE cycles in two scopes report one error each", () => {
+  it('GM-2: E_CYCLE cycles in two scopes report one error each', () => {
     const f = flow(
-      { a: map, b: map, f: frame({ x: map }, [e("x", "x")], "x", "x") },
-      [e("a", "b"), e("b", "a")],
+      { a: map, b: map, f: frame({ x: map }, [e('x', 'x')], 'x', 'x') },
+      [e('a', 'b'), e('b', 'a')],
     );
     expect(cycles(f).map((x) => [x[0], x[1]])).toEqual([
-      ["E_CYCLE", ""],
-      ["E_CYCLE", "/nodes/f/body"],
+      ['E_CYCLE', ''],
+      ['E_CYCLE', '/nodes/f/body'],
     ]);
   });
 });

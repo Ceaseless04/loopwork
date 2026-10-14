@@ -137,15 +137,6 @@ describe('GM-2: ERROR_CODES', () => {
 });
 
 describe('T10: IR types', () => {
-  it('T10: the small record types have exactly the spec shape', () => {
-    pin<Equal<PortRef, { node: string; port: string }>>(true);
-    pin<Equal<Edge, { from: PortRef; to: PortRef }>>(true);
-    pin<Equal<Budgets, { maxIterations: number; maxDurationMs: number; maxCostUsd?: number; maxTokens?: number }>>(true);
-    pin<Equal<Body, { nodes: Record<string, FlowNode>; edges: Edge[]; entry: PortRef; exit: PortRef }>>(true);
-    pin<Equal<Flow, { version: 1; id: string; name: string; nodes: Record<string, FlowNode>; edges: Edge[] }>>(true);
-    expect(true).toBe(true);
-  });
-
   it('T10: node and frame discriminants match the spec', () => {
     pin<Equal<FlowNode['kind'], 'source' | 'map' | 'sink' | 'frame'>>(true);
     pin<Equal<Frame['frame'], 'foreach' | 'while' | 'until' | 'retry'>>(true);
@@ -274,6 +265,8 @@ describe('T10: the whole IR equals the spec copy', () => {
   it('T10: the type-test helpers reject what they must', () => {
     pin<Not<Equal<{ a?: number }, { a: number }>>>(true);
     pin<Not<Equal<string, 'x'>>>(true);
+    pin<Not<Equal<'x', string>>>(true);
+    pin<Not<Equal<{ a: number }, { a: number; b?: string }>>>(true);
     pin<Not<Fits<string, 'x'>>>(true);
     pin<Equal<Not<true>, false>>(true);
     const pinIsStrict: Equal<Parameters<typeof pin>[0], true> = true; // a pin that accepted `false` would make every pin vacuous

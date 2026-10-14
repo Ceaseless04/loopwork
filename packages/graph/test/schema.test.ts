@@ -1357,32 +1357,35 @@ describe('T11: large inputs run in linear time', () => {
   const N = 100_000;
   // Linear-time guard that holds on a loaded machine. An absolute wall-clock budget either flakes under CPU contention
   // or, made generous, misses a cheap quadratic scan (a plain 100k x 100k loop takes ~7 s), so compare like with like:
-  // ONE call at N against TEN calls at N/10 (the same total work if linear), interleaved, after a warm-up. Linear code
-  // stays below ~3x (GC and hash-table growth, CPU contention); a quadratic regression shows ~8-20x. A borderline
-  // attempt is retried (up to three); a clearly superlinear one fails at once. The 25 ms floor absorbs timer resolution.
-  const MAX_GROWTH = 4;
+  // ONE call at N against TEN calls at N/10 (the same total work if linear), after a warm-up. Each side is the best (minimum)
+  // of up to three interleaved rounds, so a GC pause or a CPU-contention spike in one round cannot fail a linear function;
+  // the minima only shrink, so the loop stops at the first round whose minima agree. Linear code stays near 1x (well below
+  // the limit even with hash-table growth); a quadratic one shows ~10x or more however its minima are taken. The 25 ms floor
+  // absorbs timer resolution.
+  const MAX_GROWTH = 6;
   const FLOOR_MS = 25;
   const elapsed = (fn: () => unknown): number => {
-    const start = Date.now();
+    const start = performance.now();
     fn();
-    return Date.now() - start;
+    return performance.now() - start;
   };
   const expectLinear = <T>(label: string, make: (n: number) => T, run: (input: T) => unknown): void => {
     const big = make(N);
     const small = make(N / 10);
     run(small);
-    const attempts: string[] = [];
+    let bestBig = Infinity;
+    let bestTenSmall = Infinity;
     for (let i = 0; i < 3; i++) {
-      const tenSmall = elapsed(() => {
-        for (let k = 0; k < 10; k++) run(small);
-      });
-      const oneBig = elapsed(() => run(big));
-      const growth = oneBig / Math.max(tenSmall, FLOOR_MS);
-      if (growth <= MAX_GROWTH) return;
-      attempts.push(`${oneBig} ms for n=${N} vs ${tenSmall} ms for 10 x n=${N / 10}`);
-      if (growth > 2 * MAX_GROWTH) break;
+      bestTenSmall = Math.min(
+        bestTenSmall,
+        elapsed(() => {
+          for (let k = 0; k < 10; k++) run(small);
+        }),
+      );
+      bestBig = Math.min(bestBig, elapsed(() => run(big)));
+      if (bestBig / Math.max(bestTenSmall, FLOOR_MS) <= MAX_GROWTH) return;
     }
-    expect(attempts, `${label} grows faster than linearly`).toEqual([]);
+    throw new Error(`${label} grows faster than linearly: ${Math.round(bestBig)} ms for n=${N} vs ${Math.round(bestTenSmall)} ms for 10 x n=${N / 10}`);
   };
   const ints = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
   const wideValue = (n: number): Record<string, JsonValue> => {

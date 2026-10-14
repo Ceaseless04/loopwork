@@ -55,8 +55,9 @@ import type { Flow, JsonValue, ParseResult, ValidationError } from './types.js';
  *     input, a huge key under a shared (DAG) structure and a huge id under many errors cannot grow without limit.
  *     Past the limit parsing stops and the result carries exactly one more error, at '', 'input too large'.
  *   MAX_ERRORS = 250,000: the 250,001st distinct error is not recorded; parsing stops and the result carries exactly
- *     one more error, at '', 'too many errors'. The first 250,000 found stay, sorted as usual. They are found in
- *     DOCUMENT order (object entries and array elements are visited as they appear), so the document's first errors win.
+ *     one more error, at '', 'too many errors'. The first 250,000 found stay, sorted as usual. Within one array or record they are found in
+ *     DOCUMENT order (entries and elements are visited as they appear); top-level fields are checked in a fixed order, so a
+ *     kept set is not necessarily a prefix of the document.
  * The first limit reached is the one reported; reaching either is never ok:true. The limits are not exported (the tests
  * probe them from either side). OUTSIDE the guarantee: a getter or Proxy trap that never returns or is slow, and hidden
  * key blobs (many non-enumerable or symbol keys, a Proxy `ownKeys` listing millions of names) cost time that is not

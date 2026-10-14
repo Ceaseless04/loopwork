@@ -2,7 +2,7 @@ import { scopedId } from './ids.js';
 import type { Edge, Flow, ValidationError } from './types.js';
 import { walkScopes } from './walk.js';
 
-// Iterative DFS (input chains can be 200k deep). Returns the first cycle found, in edge order, e.g. ['a','b','a'];
+// Iterative DFS (input chains can be 200k deep). Returns the first cycle found (DFS roots follow node declaration order, not edge order), e.g. ['a','b','a'];
 // edges touching ids outside nodeIds are ignored (E_UNKNOWN_NODE reports those).
 export function findCycle(nodeIds: string[], edges: Edge[]): string[] | undefined {
   const out = new Map<string, string[]>(nodeIds.map((id) => [id, []]));

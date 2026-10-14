@@ -48,7 +48,7 @@ export function checkTypes(flow: Flow): ValidationError[] {
         }
       }
       if (portsOf(node).in && !fed.has(id)) {
-        errors.push({ code: 'E_UNCONNECTED_PORT', message: `input port "in" of node "${id}" has no incoming edge`, node: sc(id), path });
+        errors.push({ code: 'E_UNCONNECTED_PORT', message: `input port "in" of node "${sc(id)}" has no incoming edge`, node: sc(id), path });
       }
       if (node.kind !== 'frame') continue;
       const { body } = node;
