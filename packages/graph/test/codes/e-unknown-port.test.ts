@@ -72,18 +72,21 @@ describe('GM-2: E_UNKNOWN_PORT port direction', () => {
       { a: src, a2: src, m: map, s: sink, r: retryNode },
       [e('a', 'out', 'm', 'in'), e('m', 'out', 's', 'in'), e('a2', 'out', 'r', 'in'), extra],
     );
-  const rows: [string, Flow, string][] = [
-    ['map.in as from', direction(e('m', 'in', 's', 'in')), '/edges/3/from/port'],
-    ['source.out as to', direction(e('a', 'out', 'a2', 'out')), '/edges/3/to/port'],
-    ['retry.error as to', direction(e('a', 'out', 'r', 'error'), retry('emit-error')), '/edges/3/to/port'],
+  const FROM = "an edge's from port must be an output port";
+  const TO = "an edge's to port must be the input port";
+  const rows: [string, Flow, string, string][] = [
+    ['map.in as from', direction(e('m', 'in', 's', 'in')), '/edges/3/from/port', FROM],
+    ['source.out as to', direction(e('a', 'out', 'a2', 'out')), '/edges/3/to/port', TO],
+    ['retry.error as to', direction(e('a', 'out', 'r', 'error'), retry('emit-error')), '/edges/3/to/port', TO],
   ];
 
-  it.each(rows)('GM-2: E_UNKNOWN_PORT direction %s', (_name, flow, path) => {
+  it.each(rows)('GM-2: E_UNKNOWN_PORT direction %s', (_name, flow, path, text) => {
     const r = validateWired(flow);
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.errors.map((x) => [x.code, x.path])).toEqual([['E_UNKNOWN_PORT', path]]);
     expect(r.errors[0]?.edge).toBeDefined();
+    expect(r.errors[0]?.message).toContain(text);
   });
 });
 

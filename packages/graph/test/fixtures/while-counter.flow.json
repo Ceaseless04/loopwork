@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "id": "while-counter",
+  "name": "Count up until the limit is reached",
+  "nodes": {
+    "init": {
+      "kind": "source",
+      "fn": "state.init",
+      "params": { "count": 0 },
+      "out": { "type": "object", "properties": { "count": { "type": "integer" } }, "required": ["count"] }
+    },
+    "loop": {
+      "kind": "frame",
+      "frame": "while",
+      "condition": "state.count < 10",
+      "budgets": { "maxIterations": 100, "maxDurationMs": 60000 },
+      "in": { "type": "object", "properties": { "count": { "type": "integer" } }, "required": ["count"] },
+      "out": { "type": "object", "properties": { "count": { "type": "integer" } }, "required": ["count"] },
+      "body": {
+        "nodes": {
+          "increment": {
+            "kind": "map",
+            "fn": "counter.increment",
+            "params": { "by": 1 },
+            "in": { "type": "object", "properties": { "count": { "type": "integer" } }, "required": ["count"] },
+            "out": { "type": "object", "properties": { "count": { "type": "integer" } }, "required": ["count"] }
+          }
+        },
+        "edges": [],
+        "entry": { "node": "increment", "port": "in" },
+        "exit": { "node": "increment", "port": "out" }
+      }
+    },
+    "report": {
+      "kind": "sink",
+      "fn": "log.report",
+      "in": { "type": "object", "properties": { "count": { "type": "integer" } }, "required": ["count"] }
+    }
+  },
+  "edges": [
+    { "from": { "node": "init", "port": "out" }, "to": { "node": "loop", "port": "in" } },
+    { "from": { "node": "loop", "port": "out" }, "to": { "node": "report", "port": "in" } }
+  ]
+}

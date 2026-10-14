@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "id": "retry-flaky",
+  "name": "Call a flaky API with retries and a dead-letter sink",
+  "nodes": {
+    "ids": {
+      "kind": "source",
+      "fn": "ids.list",
+      "params": { "limit": 25 },
+      "out": { "type": "string" }
+    },
+    "flaky": {
+      "kind": "frame",
+      "frame": "retry",
+      "maxAttempts": 4,
+      "backoff": { "kind": "exponential", "baseMs": 200 },
+      "onExhausted": "emit-error",
+      "budgets": { "maxIterations": 100, "maxDurationMs": 120000 },
+      "in": { "type": "string" },
+      "out": { "type": "object", "properties": { "id": { "type": "string" }, "status": { "type": "integer" } }, "required": ["id", "status"] },
+      "body": {
+        "nodes": {
+          "call": {
+            "kind": "map",
+            "fn": "http.get",
+            "params": { "url": "https://api.example.com/items" },
+            "in": { "type": "string" },
+            "out": { "type": "object", "properties": { "id": { "type": "string" }, "status": { "type": "integer" } }, "required": ["id", "status"] }
+          }
+        },
+        "edges": [],
+        "entry": { "node": "call", "port": "in" },
+        "exit": { "node": "call", "port": "out" }
+      }
+    },
+    "save": {
+      "kind": "sink",
+      "fn": "db.insert",
+      "in": { "type": "object", "properties": { "id": { "type": "string" }, "status": { "type": "integer" } }, "required": ["id", "status"] }
+    },
+    "deadLetter": {
+      "kind": "sink",
+      "fn": "queue.dead-letter",
+      "in": { "type": "object", "properties": { "message": { "type": "string" }, "item": {} }, "required": ["message", "item"] }
+    }
+  },
+  "edges": [
+    { "from": { "node": "ids", "port": "out" }, "to": { "node": "flaky", "port": "in" } },
+    { "from": { "node": "flaky", "port": "out" }, "to": { "node": "save", "port": "in" } },
+    { "from": { "node": "flaky", "port": "error" }, "to": { "node": "deadLetter", "port": "in" } }
+  ]
+}

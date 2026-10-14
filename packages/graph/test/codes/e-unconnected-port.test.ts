@@ -40,6 +40,13 @@ describe('GM-2: E_UNCONNECTED_PORT', () => {
     expect(r.errors.map((x) => [x.code, x.path, x.node])).toEqual([['E_UNCONNECTED_PORT', path, node]]);
   });
 
+  // The message names the node by its scoped id (the same id `node` carries), not the bare body-local key.
+  it('GM-2: E_UNCONNECTED_PORT message uses the scoped node id', () => {
+    const r = validateFlow(flow({ a: src, f: frame({ x: map, y: map }), s: sink }, [e('a', 'f'), e('f', 's')]));
+    if (r.ok) throw new Error('expected errors');
+    expect(r.errors.map((x) => [x.node, x.message])).toEqual([['f.y', 'input port "in" of node "f.y" has no incoming edge']]);
+  });
+
   // An edge into a port that does not exist (or points the wrong way) does not feed the node.
   it('GM-2: E_UNCONNECTED_PORT an edge into an unknown port does not feed the node', () => {
     const edge: Edge = { from: { node: 'a', port: 'out' }, to: { node: 'm', port: 'nope' } };

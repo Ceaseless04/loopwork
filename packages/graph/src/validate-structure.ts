@@ -34,7 +34,7 @@ export function checkStructure(flow: Flow): ValidationError[] {
         errors.push({ code: 'E_UNKNOWN_PORT', message: `node "${ref.node}" has no port "${ref.port}"`, node: sc(ref.node), ...at, path: `${path}/port` });
       } else if (side !== undefined && (side === 'from') === (ref.port === 'in')) {
         // Direction: an edge leaves an output port (out, error) and enters the input port (in).
-        const msg = `port "${ref.port}" of node "${ref.node}" is ${side === 'from' ? 'an input' : 'an output'} port, but an edge ${side} must be ${side === 'from' ? 'an output' : 'the input'} port`;
+        const msg = `port "${ref.port}" of node "${ref.node}" is ${side === 'from' ? 'an input' : 'an output'} port, but an edge's ${side} port must be ${side === 'from' ? 'an output' : 'the input'} port`;
         errors.push({ code: 'E_UNKNOWN_PORT', message: msg, node: sc(ref.node), ...at, path: `${path}/port` });
       }
     };

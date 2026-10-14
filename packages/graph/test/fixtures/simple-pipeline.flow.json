@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "id": "simple-pipeline",
+  "name": "Simple pipeline: read, normalise, write",
+  "nodes": {
+    "read": {
+      "kind": "source",
+      "fn": "csv.read",
+      "params": { "path": "input.csv", "delimiter": "," },
+      "out": {
+        "type": "object",
+        "properties": { "id": { "type": "integer" }, "name": { "type": "string" } },
+        "required": ["id", "name"]
+      }
+    },
+    "normalize": {
+      "kind": "map",
+      "fn": "text.normalize",
+      "params": { "field": "name", "case": "lower" },
+      "in": {
+        "type": "object",
+        "properties": { "id": { "type": "integer" }, "name": { "type": "string" } },
+        "required": ["id", "name"]
+      },
+      "out": {
+        "type": "object",
+        "properties": { "id": { "type": "integer" }, "label": { "type": "string" } },
+        "required": ["id", "label"]
+      }
+    },
+    "write": {
+      "kind": "sink",
+      "fn": "jsonl.write",
+      "params": { "path": "output.jsonl" },
+      "in": {
+        "type": "object",
+        "properties": { "id": { "type": "integer" }, "label": { "type": "string" } },
+        "required": ["id", "label"]
+      }
+    }
+  },
+  "edges": [
+    { "from": { "node": "read", "port": "out" }, "to": { "node": "normalize", "port": "in" } },
+    { "from": { "node": "normalize", "port": "out" }, "to": { "node": "write", "port": "in" } }
+  ]
+}
