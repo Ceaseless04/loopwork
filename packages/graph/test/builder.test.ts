@@ -110,6 +110,36 @@ describe('T17: flow() builder', () => {
     expect(third.edges).toEqual([...expected, { from: ref('d', 'out'), to: ref('e', 'in') }]);
   });
 
+  it('T17: build() preserves NaN, Infinity and undefined keys exactly, as independent copies', () => {
+    // parseFlow reports these as E_SHAPE; the builder must not sanitise them away.
+    const params = { a: NaN, b: Infinity, c: undefined, d: [NaN] } as unknown as { [k: string]: never };
+    const b = flow('f10', 'Raw')
+      .source('s', { fn: 'read', params, out: { inferFrom: [NaN] } })
+      .sink('k', { fn: 'write', in: { inferFrom: [NaN] } });
+    const first = b.build();
+    const second = b.build();
+
+    const s = first.nodes['s'] as { params: Record<string, unknown>; out: { inferFrom: unknown[] } };
+    expect(Object.is(s.params['a'], NaN)).toBe(true);
+    expect(s.params['b']).toBe(Infinity);
+    expect('c' in s.params).toBe(true);
+    expect(s.params['c']).toBeUndefined();
+    expect(Object.is((s.params['d'] as unknown[])[0], NaN)).toBe(true);
+    expect(Object.is(s.out.inferFrom[0], NaN)).toBe(true);
+    const k = first.nodes['k'] as { in: { inferFrom: unknown[] } };
+    expect(Object.is(k.in.inferFrom[0], NaN)).toBe(true);
+
+    // still independent copies
+    s.params['x'] = 1;
+    (s.params['d'] as unknown[]).push(2);
+    s.out.inferFrom.push(3);
+    const s2 = second.nodes['s'] as { params: Record<string, unknown>; out: { inferFrom: unknown[] } };
+    expect('x' in s2.params).toBe(false);
+    expect(s2.params['d']).toHaveLength(1);
+    expect(s2.out.inferFrom).toHaveLength(1);
+    expect(Object.is(s2.params['a'], NaN)).toBe(true);
+  });
+
   it('T17: does not leak the caller-supplied spec objects into the build', () => {
     const out: Schema = { type: 'object', properties: { a: str } };
     const built = flow('f4', 'Copy').source('s', { fn: 'read', out }).build();
