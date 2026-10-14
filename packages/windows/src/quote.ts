@@ -4,7 +4,8 @@ export const quotePosix = (s: string): string => `'${s.replaceAll("'", "'\\''")}
 export const joinPosix = (args: readonly string[]): string => args.map(quotePosix).join(' ');
 
 export const quoteCmd = (s: string): string => {
-  // cmd cannot carry a raw newline in one command line (documented limitation): flatten to a space.
+  // Documented limits. A raw newline cannot ride in one cmd command line: flatten to a space. `^%` relies on no
+  // variable whose name ends in `^`. `^!` does not stop `!VAR!` expansion under /V:ON: value substitution only, no command injection.
   const flat = s.replace(/[\r\n]/g, ' ');
   // Empty must stay an argument (`""`); no space/tab/quote needs no argv quoting.
   const argv =
