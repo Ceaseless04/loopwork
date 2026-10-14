@@ -84,8 +84,8 @@ describe('GM-2: E_UNKNOWN_PORT body edges and boundary refs', () => {
 
   // entry must be an input port ('in'), exit an output port ('out'): a port that exists but points the wrong way is unknown too.
   it.each<[string, Flow, string]>([
-    ['body entry port out', inBody([], { node: 'x', port: 'out' }), '/nodes/f/body/entry/port'],
-    ['body exit port in', inBody([], undefined, { node: 'y', port: 'in' }), '/nodes/f/body/exit/port'],
+    ['body entry port out', inBody([e('x', 'out', 'y', 'in')], { node: 'x', port: 'out' }), '/nodes/f/body/entry/port'],
+    ['body exit port in', inBody([e('x', 'out', 'y', 'in')], undefined, { node: 'y', port: 'in' }), '/nodes/f/body/exit/port'],
   ])('GM-2: E_UNKNOWN_PORT %s', (_name, flow, path) => {
     const r = validateFlow(flow);
     expect(r.ok).toBe(false);
