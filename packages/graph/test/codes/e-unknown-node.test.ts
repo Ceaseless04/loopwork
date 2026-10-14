@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateFlow } from '../../src/validate.js';
+import { validateWired } from '../helpers.js';
 import type { Edge, Flow, FlowNode } from '../../src/types.js';
 
 // GM-2, E_UNKNOWN_NODE: an edge endpoint names a node that is not in the scope. path = `<scope>/edges/<i>/<from|to>/node`;
@@ -43,7 +43,7 @@ describe('GM-2: E_UNKNOWN_NODE', () => {
   ];
 
   it.each(rows)('GM-2: E_UNKNOWN_NODE %s', (_name, flow, path, edge, node) => {
-    const r = validateFlow(flow);
+    const r = validateWired(flow);
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.errors.map((x) => [x.code, x.path])).toEqual([['E_UNKNOWN_NODE', path]]);
@@ -52,12 +52,12 @@ describe('GM-2: E_UNKNOWN_NODE', () => {
   });
 
   it('GM-2: E_UNKNOWN_NODE valid edges pass, in the outer scope and in a body', () => {
-    expect(validateFlow(outer([e('a', 'out', 'b', 'in')])).ok).toBe(true);
-    expect(validateFlow(inBody([e('x', 'out', 'y', 'in')])).ok).toBe(true);
+    expect(validateWired(outer([e('a', 'out', 'b', 'in')])).ok).toBe(true);
+    expect(validateWired(inBody([e('x', 'out', 'y', 'in')])).ok).toBe(true);
   });
 
   it('GM-2: E_UNKNOWN_NODE both endpoints missing reports both', () => {
-    const r = validateFlow(outer([e('p', 'out', 'q', 'in')]));
+    const r = validateWired(outer([e('p', 'out', 'q', 'in')]));
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.errors.map((x) => [x.code, x.path])).toEqual([

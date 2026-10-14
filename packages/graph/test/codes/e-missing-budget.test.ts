@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateFlow } from '../../src/validate.js';
+import { validateWired } from '../helpers.js';
 import type { Edge, Flow, FlowNode } from '../../src/types.js';
 
 // GM-3 / GM-2, E_MISSING_BUDGET: a frame's budgets.maxIterations / maxDurationMs is absent or not a positive integer.
@@ -39,7 +39,7 @@ const flow = (nodes: Record<string, FlowNode>): Flow => ({
 const good = { maxIterations: 10, maxDurationMs: 1000 };
 
 const errs = (f: Flow) => {
-  const r = validateFlow(f);
+  const r = validateWired(f);
   return r.ok ? [] : r.errors.map((x) => [x.code, x.path]);
 };
 
@@ -79,7 +79,7 @@ describe('GM-3: budgets are mandatory on every frame', () => {
   });
 
   it('GM-3: the same flow with budgets passes', () => {
-    expect(validateFlow(flow({ f: frame(good) })).ok).toBe(true);
+    expect(validateWired(flow({ f: frame(good) })).ok).toBe(true);
   });
 
   it('GM-3: both budgets missing reports one error per field', () => {
@@ -102,13 +102,13 @@ describe('GM-3: budgets are mandatory on every frame', () => {
     const f = flow({
       f: frame(good, { x: map, y: map, g: frame({ maxIterations: 10 }) }),
     });
-    const r = validateFlow(f);
+    const r = validateWired(f);
     expect(r.ok ? [] : r.errors.map((x) => x.node)).toEqual(['f.g']);
   });
 
   it('GM-3: optional maxCostUsd and maxTokens are accepted and carried', () => {
     const f = flow({ f: frame({ ...good, maxCostUsd: 0.5, maxTokens: 1000 }) });
-    const r = validateFlow(f);
+    const r = validateWired(f);
     expect(r.ok).toBe(true);
     expect(r.ok && r.flow.nodes.f).toMatchObject({
       budgets: { maxCostUsd: 0.5, maxTokens: 1000 },

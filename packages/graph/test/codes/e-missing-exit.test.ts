@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateFlow } from '../../src/validate.js';
+import { validateWired } from '../helpers.js';
 import type { Edge, Flow, FlowNode } from '../../src/types.js';
 
 // GM-2, E_MISSING_EXIT: while/until without a condition (path `.../condition`), retry with maxAttempts < 1
@@ -49,7 +49,7 @@ const flow = (nodes: Record<string, FlowNode>): Flow => ({
   edges: [],
 });
 const errs = (f: Flow) => {
-  const r = validateFlow(f);
+  const r = validateWired(f);
   return r.ok ? [] : r.errors.map((x) => [x.code, x.path]);
 };
 
@@ -123,7 +123,7 @@ describe('GM-2: E_MISSING_EXIT', () => {
   });
 
   it('GM-2: E_MISSING_EXIT valid exits pass: condition, maxAttempts 1, multi-hop path, entry == exit', () => {
-    const ok = (f: FlowNode) => expect(validateFlow(flow({ f })).ok).toBe(true);
+    const ok = (f: FlowNode) => expect(validateWired(flow({ f })).ok).toBe(true);
     ok(frame('while', { condition: 'c' }));
     ok(frame('retry', { ...retry, maxAttempts: 1 }));
     ok(

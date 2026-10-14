@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { portsOf } from '../../src/walk.js';
-import { validateFlow } from '../../src/validate.js';
+import { validateWired } from '../helpers.js';
 import type { Edge, Flow, FlowNode } from '../../src/types.js';
 
 // GM-2, E_UNKNOWN_PORT: an edge endpoint names a port the node kind does not have. path = `<scope>/edges/<i>/<from|to>/port`.
@@ -50,7 +50,7 @@ describe('GM-2: E_UNKNOWN_PORT', () => {
   ];
 
   it.each(rows)('GM-2: E_UNKNOWN_PORT %s', (_name, edge, path) => {
-    const r = validateFlow(flowOf(nodes, [edge]));
+    const r = validateWired(flowOf(nodes, [edge]));
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.errors.map((x) => [x.code, x.path])).toEqual([['E_UNKNOWN_PORT', path]]);
@@ -58,7 +58,32 @@ describe('GM-2: E_UNKNOWN_PORT', () => {
   });
 
   it('GM-2: E_UNKNOWN_PORT retry.error with emit-error is a known port', () => {
-    expect(validateFlow(flowOf(nodes, [e('re', 'error', 's', 'in')])).ok).toBe(true);
+    // the error port carries {message,item}, so the receiving sink must accept it (an untyped sink does)
+    const anySink: FlowNode = { kind: 'sink', fn: 'f', in: {} };
+    expect(validateWired(flowOf({ ...nodes, s: anySink }, [e('re', 'error', 's', 'in')])).ok).toBe(true);
+  });
+});
+
+// Direction: an edge `from` must be an output port and `to` the input port; a port that exists but points the wrong way is
+// E_UNKNOWN_PORT too (message says the direction is wrong). Each flow is otherwise fully wired, so this is the only error.
+describe('GM-2: E_UNKNOWN_PORT port direction', () => {
+  const direction = (extra: Edge, retryNode: FlowNode = retry('fail-run')): Flow =>
+    flowOf(
+      { a: src, a2: src, m: map, s: sink, r: retryNode },
+      [e('a', 'out', 'm', 'in'), e('m', 'out', 's', 'in'), e('a2', 'out', 'r', 'in'), extra],
+    );
+  const rows: [string, Flow, string][] = [
+    ['map.in as from', direction(e('m', 'in', 's', 'in')), '/edges/3/from/port'],
+    ['source.out as to', direction(e('a', 'out', 'a2', 'out')), '/edges/3/to/port'],
+    ['retry.error as to', direction(e('a', 'out', 'r', 'error'), retry('emit-error')), '/edges/3/to/port'],
+  ];
+
+  it.each(rows)('GM-2: E_UNKNOWN_PORT direction %s', (_name, flow, path) => {
+    const r = validateWired(flow);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.errors.map((x) => [x.code, x.path])).toEqual([['E_UNKNOWN_PORT', path]]);
+    expect(r.errors[0]?.edge).toBeDefined();
   });
 });
 
@@ -74,7 +99,7 @@ describe('GM-2: E_UNKNOWN_PORT body edges and boundary refs', () => {
     );
 
   it('GM-2: E_UNKNOWN_PORT body edge carries the scoped edge id and node', () => {
-    const r = validateFlow(inBody([e('x', 'nope', 'y', 'in')]));
+    const r = validateWired(inBody([e('x', 'nope', 'y', 'in')]));
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.errors.map((x) => [x.code, x.path, x.edge, x.node])).toEqual([
@@ -87,7 +112,7 @@ describe('GM-2: E_UNKNOWN_PORT body edges and boundary refs', () => {
     ['body entry port out', inBody([e('x', 'out', 'y', 'in')], { node: 'x', port: 'out' }), '/nodes/f/body/entry/port'],
     ['body exit port in', inBody([e('x', 'out', 'y', 'in')], undefined, { node: 'y', port: 'in' }), '/nodes/f/body/exit/port'],
   ])('GM-2: E_UNKNOWN_PORT %s', (_name, flow, path) => {
-    const r = validateFlow(flow);
+    const r = validateWired(flow);
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.errors.map((x) => [x.code, x.path])).toEqual([['E_UNKNOWN_PORT', path]]);

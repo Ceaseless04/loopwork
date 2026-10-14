@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateFlow } from '../../src/validate.js';
+import { validateWired } from '../helpers.js';
 import type { Edge, Flow, FlowNode } from '../../src/types.js';
 
 // GM-2, E_BAD_LIMIT: map/sink `concurrency` present but not a positive integer; foreach `concurrency` absent or invalid;
@@ -50,7 +50,7 @@ const flow = (nodes: Record<string, FlowNode>): Flow => ({
   edges: [],
 });
 const errs = (f: Flow) => {
-  const r = validateFlow(f);
+  const r = validateWired(f);
   return r.ok ? [] : r.errors.map((x) => [x.code, x.path]);
 };
 const withProp = (n: FlowNode, k: string, v: unknown): FlowNode =>
@@ -157,7 +157,7 @@ describe('GM-2: E_BAD_LIMIT', () => {
 
   it('GM-2: E_BAD_LIMIT valid limits pass, and map/sink concurrency may be absent', () => {
     const ok = (nodes: Record<string, FlowNode>) =>
-      expect(validateFlow(flow(nodes)).ok).toBe(true);
+      expect(validateWired(flow(nodes)).ok).toBe(true);
     ok({ f: foreach(4), r: retry({}), m: map, k: sink });
     ok({
       m: withProp(map, 'concurrency', 2),
