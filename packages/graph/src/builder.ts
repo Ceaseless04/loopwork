@@ -2,6 +2,9 @@ import type { Edge, Flow, FlowNode, Frame, PortRef } from './types.js';
 
 type Spec<K extends 'source' | 'map' | 'sink'> = Omit<Extract<FlowNode, { kind: K }>, 'kind'>;
 
+// structuredClone exists at runtime (Node 20, browsers) but is not typed under `types: []`.
+declare const structuredClone: <T>(v: T) => T;
+
 // edge() takes plain strings (not `${string}.${string}`) because the builder never rejects a dotless one.
 // Split at the LAST '.': node ids may be scoped ("loop.a"), ports never contain '.'.
 // A string with no '.' is not rejected (the builder never validates): it yields an empty port.
@@ -28,8 +31,8 @@ export function flow(id: string, name: string): FlowBuilder {
     sink: (nid, spec) => ((nodes[nid] = { kind: 'sink', ...spec }), b),
     frame: (nid, frame) => ((nodes[nid] = frame), b),
     edge: (from, to) => (edges.push({ from: ref(from), to: ref(to) }), b),
-    // Flow is plain JSON data, so a JSON round-trip is a deep copy (structuredClone is not typed under `types: []`).
-    build: () => JSON.parse(JSON.stringify({ version: 1, id, name, nodes, edges })) as Flow,
+    // Lossless deep copy: the builder must not sanitise (NaN/Infinity/undefined reach parseFlow intact).
+    build: () => structuredClone({ version: 1 as const, id, name, nodes, edges }),
   };
   return b;
 }
