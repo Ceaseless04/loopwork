@@ -1,8 +1,9 @@
+import { checkCycles } from './validate-cycles.js';
 import { checkStructure } from './validate-structure.js';
 import type { Flow, ValidationError, ValidationResult } from './types.js';
 
 // Ordered checker list; T14..T16 each append one. Errors are concatenated and sorted by path (UTF-16 order, stable).
-const checkers: ((flow: Flow) => ValidationError[])[] = [checkStructure];
+const checkers: ((flow: Flow) => ValidationError[])[] = [checkStructure, checkCycles];
 
 export function validateFlow(flow: Flow): ValidationResult {
   const errors = checkers.flatMap((check) => check(flow)).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
