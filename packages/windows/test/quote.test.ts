@@ -61,7 +61,7 @@ describe('quote', () => {
       ['a<b>|c', 'a^<b^>^|c', '< > | are careted'],
       ['a^b', 'a^^b', '^ is careted'],
       ['100%', '100^%', '% is careted'],
-      ['hi!', 'hi^!', '! is careted (delayed expansion)'],
+      ['hi!', 'hi^!', '! is careted: ^! does not stop !VAR! under /V:ON (value substitution only, no injection)'],
       ['C:\\dir\\', 'C:\\dir\\', 'no space/tab/quote: trailing backslash untouched'],
       ['C:\\my dir\\', '^"C:\\my dir\\\\^"', 'quoted, so the backslash before the closing quote is doubled'],
       ['C:\\my dir\\\\', '^"C:\\my dir\\\\\\\\^"', 'two trailing backslashes in quotes: both doubled before the closing quote'],
