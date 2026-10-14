@@ -13,10 +13,11 @@ describe('GM-2: validateFlow orchestration', () => {
       nodes: {
         'a.b': { kind: 'source', fn: 'f', out: str },
         s: { kind: 'sink', fn: 'f', in: str },
+        s2: { kind: 'sink', fn: 'f', in: str },
       },
       edges: [
         { from: { node: 'zz', port: 'out' }, to: { node: 's', port: 'in' } },
-        { from: { node: 's', port: 'out' }, to: { node: 's', port: 'in' } },
+        { from: { node: 's', port: 'out' }, to: { node: 's2', port: 'in' } },
       ],
     };
     const r = validateFlow(flow);

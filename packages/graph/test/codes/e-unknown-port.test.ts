@@ -39,10 +39,10 @@ describe('GM-2: E_UNKNOWN_PORT', () => {
     expect(portsOf(node)).toEqual(ports);
   });
 
-  const nodes = { a: src, m: map, s: sink, fe: foreach, r: retry('fail-run'), re: retry('emit-error') };
+  const nodes = { a: src, a2: src, m: map, s: sink, fe: foreach, r: retry('fail-run'), re: retry('emit-error') };
   const rows: [string, Edge, string][] = [
     ['sink.out as from', e('s', 'out', 'm', 'in'), '/edges/0/from/port'],
-    ['source.in as to', e('a', 'out', 'a', 'in'), '/edges/0/to/port'],
+    ['source.in as to', e('a', 'out', 'a2', 'in'), '/edges/0/to/port'],
     ['retry.error without emit-error', e('r', 'error', 's', 'in'), '/edges/0/from/port'],
     ['foreach.error', e('fe', 'error', 's', 'in'), '/edges/0/from/port'],
     ['Object.prototype port name', e('a', 'toString', 's', 'in'), '/edges/0/from/port'],
