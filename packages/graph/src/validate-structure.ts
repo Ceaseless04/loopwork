@@ -20,7 +20,7 @@ export function checkStructure(flow: Flow): ValidationError[] {
       }
     }
     // A ref is checked as: node exists, then port exists (boundary refs also in the right direction).
-    const checkRef = (ref: PortRef, path: string, edge: string | undefined, dir: 'in' | 'out' | undefined): void => {
+    const checkRef = (ref: PortRef, path: string, edge: string | undefined, dir: 'in' | 'out' | undefined, side?: 'from' | 'to'): void => {
       const target = Object.hasOwn(scope.nodes, ref.node) ? scope.nodes[ref.node] : undefined;
       const at = edge === undefined ? {} : { edge };
       if (target === undefined) {
@@ -32,12 +32,16 @@ export function checkStructure(flow: Flow): ValidationError[] {
       const ok = dir === undefined ? known && ports[ref.port as 'in' | 'out' | 'error'] : ref.port === dir && ports[dir];
       if (!ok) {
         errors.push({ code: 'E_UNKNOWN_PORT', message: `node "${ref.node}" has no port "${ref.port}"`, node: sc(ref.node), ...at, path: `${path}/port` });
+      } else if (side !== undefined && (side === 'from') === (ref.port === 'in')) {
+        // Direction: an edge leaves an output port (out, error) and enters the input port (in).
+        const msg = `port "${ref.port}" of node "${ref.node}" is ${side === 'from' ? 'an input' : 'an output'} port, but an edge ${side} must be ${side === 'from' ? 'an output' : 'the input'} port`;
+        errors.push({ code: 'E_UNKNOWN_PORT', message: msg, node: sc(ref.node), ...at, path: `${path}/port` });
       }
     };
     scope.edges.forEach((e, i) => {
       const id = edgeId(scopedEdge(e, sc));
-      checkRef(e.from, `${scope.scopePath}/edges/${i}/from`, id, undefined);
-      checkRef(e.to, `${scope.scopePath}/edges/${i}/to`, id, undefined);
+      checkRef(e.from, `${scope.scopePath}/edges/${i}/from`, id, undefined, 'from');
+      checkRef(e.to, `${scope.scopePath}/edges/${i}/to`, id, undefined, 'to');
     });
     if (scope.body !== undefined) {
       checkRef(scope.body.entry, `${scope.scopePath}/entry`, undefined, 'in');

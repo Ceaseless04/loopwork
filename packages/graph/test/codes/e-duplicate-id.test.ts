@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateFlow } from '../../src/validate.js';
+import { validateWired } from '../helpers.js';
 import type { Flow, FlowNode } from '../../src/types.js';
 
 // GM-2, E_DUPLICATE_ID. Node ids are record keys, so a literal duplicate cannot exist; the code applies to ids that
@@ -36,7 +36,7 @@ describe('GM-2: E_DUPLICATE_ID', () => {
   ];
 
   it.each(rows)('GM-2: E_DUPLICATE_ID %s', (_name, flow, path, node) => {
-    const r = validateFlow(flow);
+    const r = validateWired(flow);
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.errors.map((e) => [e.code, e.path, e.node])).toEqual([['E_DUPLICATE_ID', path, node]]);
@@ -44,6 +44,6 @@ describe('GM-2: E_DUPLICATE_ID', () => {
   });
 
   it('GM-2: E_DUPLICATE_ID dot-free ids at every scope pass', () => {
-    expect(validateFlow(flowOf({ a: src, f: frame({ a: map }, 'a') })).ok).toBe(true);
+    expect(validateWired(flowOf({ a: src, f: frame({ a: map }, 'a') })).ok).toBe(true);
   });
 });

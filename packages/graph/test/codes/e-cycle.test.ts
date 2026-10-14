@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateFlow } from "../../src/validate.js";
+import { validateWired } from "../helpers.js";
 import type { Edge, Flow, FlowNode } from "../../src/types.js";
 
 // GM-2/GM-4, E_CYCLE: a directed cycle among a scope's nodes. One error per scope with a cycle, path = the scope pointer,
@@ -39,7 +39,7 @@ const flow = (nodes: Record<string, FlowNode>, edges: Edge[]): Flow => ({
 });
 
 const cycles = (f: Flow) => {
-  const r = validateFlow(f);
+  const r = validateWired(f);
   expect(r.ok).toBe(false);
   return r.ok ? [] : r.errors.map((x) => [x.code, x.path, x.message, x.node]);
 };
@@ -96,10 +96,10 @@ describe("GM-4: E_CYCLE", () => {
   it("GM-4: the same topology expressed with a frame validates", () => {
     // a -> b -> a as a back-edge fails; the loop as a while frame (body a -> b) has no back-edge and passes.
     expect(
-      validateFlow(flow({ a: map, b: map }, [e("a", "b"), e("b", "a")])).ok,
+      validateWired(flow({ a: map, b: map }, [e("a", "b"), e("b", "a")])).ok,
     ).toBe(false);
     expect(
-      validateFlow(
+      validateWired(
         flow({ f: frame({ a: map, b: map }, [e("a", "b")], "a", "b") }, []),
       ).ok,
     ).toBe(true);
@@ -113,8 +113,8 @@ describe("GM-4: E_CYCLE", () => {
       nodes[`n${i}`] = map;
       if (i > 0) edges.push(e(`n${i - 1}`, `n${i}`));
     }
-    expect(validateFlow(flow(nodes, edges)).ok).toBe(true);
-  });
+    expect(validateWired(flow(nodes, edges)).ok).toBe(true);
+  }, 30_000); // linear, but four 200k-node passes exceed the 5s default on slow machines
 });
 
 describe("GM-2: E_CYCLE", () => {

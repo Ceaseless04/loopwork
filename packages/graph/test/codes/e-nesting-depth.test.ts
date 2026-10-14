@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateFlow } from '../../src/validate.js';
+import { validateWired } from '../helpers.js';
 import type { Flow, FlowNode } from '../../src/types.js';
 
 // GM-2, E_NESTING_DEPTH: frames nested deeper than 8. Pinned: the 9th nested frame fails, path = that frame's node pointer
@@ -29,11 +29,11 @@ const nested = (n: number): Flow => {
 
 describe('GM-2: E_NESTING_DEPTH', () => {
   it('GM-2: E_NESTING_DEPTH 8 nested frames pass', () => {
-    expect(validateFlow(nested(8)).ok).toBe(true);
+    expect(validateWired(nested(8)).ok).toBe(true);
   });
 
   it('GM-2: E_NESTING_DEPTH 9 nested frames fail at the 9th frame', () => {
-    const r = validateFlow(nested(9));
+    const r = validateWired(nested(9));
     expect(r.ok).toBe(false);
     if (r.ok) return;
     const path = Array.from({ length: 9 }, (_v, i) => `/nodes/f${i + 1}`).join('/body');
