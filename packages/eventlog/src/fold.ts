@@ -123,6 +123,7 @@ export function applyEvent(state: RunState, e: LoopworkEvent): RunState {
     }
     case 'RunStarted':
       state.attempt = Math.max(state.attempt, e.attempt);
+      delete state.failure; // a resume reopens a failed run
       break;
     case 'RunFailed':
       state.failure = { reason: e.reason, message: e.message, node: e.node };
