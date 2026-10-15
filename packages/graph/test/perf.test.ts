@@ -27,9 +27,10 @@ const countNodes = (nodes: Record<string, FlowNode>): number =>
   Object.values(nodes).reduce((n, node) => n + 1 + (node.kind === 'frame' ? countNodes(node.body.nodes) : 0), 0);
 
 // Best of three: a loaded CI machine can stall one run, but a quadratic validator is slow in all three.
-function fastest(f: Flow): number {
+// Stops early once a run is under `limit` ms (limit 0 always runs all three).
+function fastest(f: Flow, limit = 1000): number {
   let best = Infinity;
-  for (let i = 0; i < 3 && best >= 1000; i++) {
+  for (let i = 0; i < 3 && best >= limit; i++) {
     const start = performance.now();
     const r = validateFlow(f);
     best = Math.min(best, performance.now() - start);
@@ -64,17 +65,32 @@ describe('GM-8: validation performance', () => {
     expect(fastest(f)).toBeLessThan(1000);
   });
 
-  // One frame whose body alone has thousands of nodes: the entry-to-exit reachability scan must not be nodes x edges.
-  it('GM-8: validating a frame with a 5,000-node body completes in under 1 s', () => {
+  // One frame whose body is a chain of `n` nodes: the entry-to-exit reachability scan must not be nodes x edges.
+  const bodyFlow = (n: number): Flow => {
     const inner: Record<string, FlowNode> = {};
-    const innerEdges = chain(inner, 5000, 'b');
+    const innerEdges = chain(inner, n, 'b');
     const nodes: Record<string, FlowNode> = {
       src: { kind: 'source', fn: 'f', out: int },
-      big: { kind: 'frame', frame: 'foreach', concurrency: 8, budgets, in: int, out: int, body: body(inner, innerEdges, 'b0', 'b4999') },
+      big: { kind: 'frame', frame: 'foreach', concurrency: 8, budgets, in: int, out: int, body: body(inner, innerEdges, 'b0', `b${n - 1}`) },
       dst: { kind: 'sink', fn: 'f', in: int },
     };
-    const f: Flow = { version: 1, id: 'perf-body', name: 'perf-body', nodes, edges: [wire('src', 'big'), wire('big', 'dst')] };
-    expect(countNodes(nodes)).toBeGreaterThanOrEqual(5000);
-    expect(fastest(f)).toBeLessThan(1000);
+    expect(countNodes(nodes)).toBeGreaterThanOrEqual(n);
+    return { version: 1, id: 'perf-body', name: 'perf-body', nodes, edges: [wire('src', 'big'), wire('big', 'dst')] };
+  };
+
+  it('GM-8: validating a frame with a 5,000-node body completes in under 1 s', () => {
+    expect(fastest(bodyFlow(5000))).toBeLessThan(1000);
+  });
+
+  // 50k is hopeless for a quadratic scan (tens of seconds) but trivial for a linear one; the generous bound tolerates a loaded machine.
+  it('GM-8: validating a frame with a 50,000-node body completes in under 8 s', { timeout: 60_000 }, () => {
+    expect(fastest(bodyFlow(50_000), 8000)).toBeLessThan(8000);
+  });
+
+  // Scale-free guard: 5x the nodes may cost ~5x the time (linear); a quadratic scan costs ~25x. Limit 12 leaves noise headroom.
+  it('GM-8: validation time of a chain body scales linearly (10k to 50k nodes)', { timeout: 120_000 }, () => {
+    const small = fastest(bodyFlow(10_000), 0);
+    const large = fastest(bodyFlow(50_000), 0);
+    expect(large / small).toBeLessThan(12);
   });
 });

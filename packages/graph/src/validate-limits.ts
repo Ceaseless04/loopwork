@@ -44,14 +44,20 @@ export function checkLimits(flow: Flow): ValidationError[] {
 function reachable(body: { nodes: Record<string, unknown>; edges: { from: { node: string }; to: { node: string } }[]; entry: { node: string }; exit: { node: string } }): boolean {
   const { entry, exit } = body;
   if (!Object.hasOwn(body.nodes, entry.node) || !Object.hasOwn(body.nodes, exit.node)) return true;
+  const next = new Map<string, string[]>();
+  for (const { from, to } of body.edges) {
+    const out = next.get(from.node);
+    if (out) out.push(to.node);
+    else next.set(from.node, [to.node]);
+  }
   const seen = new Set([entry.node]);
   const queue = [entry.node];
   for (let cur = queue.pop(); cur !== undefined; cur = queue.pop()) {
     if (cur === exit.node) return true;
-    for (const { from, to } of body.edges) {
-      if (from.node === cur && !seen.has(to.node)) {
-        seen.add(to.node);
-        queue.push(to.node);
+    for (const to of next.get(cur) ?? []) {
+      if (!seen.has(to)) {
+        seen.add(to);
+        queue.push(to);
       }
     }
   }
