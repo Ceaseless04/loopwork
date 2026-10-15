@@ -15,7 +15,7 @@ const commands = (plan: ReturnType<typeof planTerminal>) => plan?.steps.map((s) 
 describe('planTerminal', () => {
   // WL-1: documented first choice per fixture (command + leading args)
   it.each([
-    ['wsl', 'wt.exe', ['-w', 'new', '--title', 'T', 'wsl.exe', '--cd', '/work', '--']],
+    ['wsl', 'wt.exe', ['-w', 'new', '--title', 'T', 'wsl.exe', '--cd', '/work', '--exec']],
     ['wsl-no-wt', 'cmd.exe', ['/c', 'start', 'wsl.exe']],
     ['darwin', 'osascript', ['-e']],
     ['darwin-iterm', 'osascript', ['-e']],
@@ -71,7 +71,7 @@ describe('planTerminal', () => {
     const line = joinPosix(argv);
     expect(planTerminal({ argv }, fixtures.linux)?.steps[0]).toEqual({ command: 'x-terminal-emulator', args: ['-e', ...keepPayload(line)] });
     expect(planTerminal({ argv, cwd: '/work', title: 'T' }, fixtures.wsl)?.steps[0]?.args).toEqual([
-      '-w', 'new', '--title', 'T', 'wsl.exe', '--cd', '/work', '--', 'sh', '-c', wtEscape(line + KEEP_TAIL),
+      '-w', 'new', '--title', 'T', 'wsl.exe', '--cd', '/work', '--exec', 'sh', '-c', wtEscape(line + KEEP_TAIL),
     ]);
     expect(planTerminal({ argv, cwd: 'C:\\work', title: 'T' }, fixtures.win32)?.steps[0]?.args.slice(-5)).toEqual(['cmd.exe', '/d', '/s', '/k', joinCmd(argv)]);
   });
@@ -79,7 +79,7 @@ describe('planTerminal', () => {
   it('WL-6: keepOpen false does not wrap', () => {
     const req = { argv, cwd: '/work', title: 'T', keepOpen: false };
     expect(planTerminal({ argv, keepOpen: false }, fixtures.linux)?.steps[0]?.args).toEqual(['-e', ...argv]);
-    expect(planTerminal(req, fixtures.wsl)?.steps[0]?.args.slice(-3)).toEqual(['--', ...argv]);
+    expect(planTerminal(req, fixtures.wsl)?.steps[0]?.args.slice(-3)).toEqual(['--exec', ...argv]);
     expect(planTerminal(req, fixtures.win32)?.steps[0]?.args.slice(-5)).toEqual(['cmd.exe', '/d', '/s', '/c', joinCmd(argv)]);
   });
 
@@ -94,20 +94,24 @@ describe('planTerminal', () => {
     expect(planTerminal({ argv, cwd }, fixtures.darwin)?.steps[0]?.args).toEqual(['-e', `tell application "Terminal" to do script "${appleEscape(line)}"`]);
   });
 
-  it('wsl: the cmd.exe /c start wsl.exe fallback quotes every argument after start via quoteCmd', () => {
+  // wsl.exe is a normal program: each token after `start` is quoteCmd-ed (argv quoting + caret), so the sh payload stays ONE arg.
+  it('wsl: the cmd.exe /c start wsl.exe fallback quotes every token after start via quoteCmd (wsl.exe --exec)', () => {
     const hostile = ['echo', 'a&b c'];
-    const wslArgs = ['wsl.exe', '--cd', '/my work', '--', ...keepPayload(joinPosix(hostile))];
+    const wslArgs = ['wsl.exe', '--cd', '/my work', '--exec', ...keepPayload(joinPosix(hostile))];
     const step = planTerminal({ argv: hostile, cwd: '/my work' }, fixtures['wsl-no-wt'])?.steps[0];
     expect(step).toEqual({ command: 'cmd.exe', args: ['/c', 'start', ...wslArgs.map(quoteCmd)] });
   });
 
-  it('win32: the cmd.exe /c start fallback is parsed by cmd twice, so every argument after start is quoteCmd-ed again', () => {
-    const hostile = ['echo', 'a&calc'];
+  // win32 fallback: the inner program is cmd.exe itself, so tokens are caret-escaped only (no argv quoting);
+  // the cwd is wrapped in plain quotes first when it has whitespace.
+  it('win32: the cmd.exe /c start fallback carets every token after start once more (inner line unwrapped)', () => {
     const env = makeEnv({ platform: 'win32', tools: ['cmd.exe'] });
-    const inner = ['/D', 'C:\\my work', 'cmd.exe', '/d', '/s', '/k', joinCmd(hostile)];
-    expect(planTerminal({ argv: hostile, cwd: 'C:\\my work' }, env)?.steps).toEqual([{ command: 'cmd.exe', args: ['/c', 'start', ...inner.map(quoteCmd)] }]);
-    const noCwd = ['cmd.exe', '/d', '/s', '/c', joinCmd(hostile)];
-    expect(planTerminal({ argv: hostile, keepOpen: false }, env)?.steps[0]?.args).toEqual(['/c', 'start', ...noCwd.map(quoteCmd)]);
+    const plan = (req: Parameters<typeof planTerminal>[0]) => planTerminal(req, env)?.steps;
+    expect(plan({ argv: ['echo', 'a b'] })).toEqual([{ command: 'cmd.exe', args: ['/c', 'start', 'cmd.exe', '/d', '/s', '/k', 'echo ^^^"a b^^^"'] }]);
+    expect(plan({ argv: ['echo', 'a&calc'], cwd: 'C:\\my work' })).toEqual([
+      { command: 'cmd.exe', args: ['/c', 'start', '/D', '^"C:\\my work^"', 'cmd.exe', '/d', '/s', '/k', 'echo a^^^&calc'] },
+    ]);
+    expect(plan({ argv: ['echo', 'a b'], keepOpen: false })?.[0]?.args.slice(2, 6)).toEqual(['cmd.exe', '/d', '/s', '/c']);
   });
 
   it('linux: WAYLAND_DISPLAY alone (no DISPLAY) allows terminals', () => {

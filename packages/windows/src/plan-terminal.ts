@@ -6,6 +6,7 @@ const KEEP_TAIL = '; printf "\\n[loopwork exited — press Enter to close]"; rea
 const wtEscape = (s: string): string => s.replaceAll(';', '\\;');
 // AppleScript string literals only need `\` and `"` escaped.
 const appleEscape = (s: string): string => s.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+const caretOnly = (s: string): string => s.replace(/[()%!^"<>&|]/g, '^$&');
 const LINUX_TERMINALS: [string, string[]][] = [
   ['x-terminal-emulator', ['-e']],
   ['gnome-terminal', ['--']],
@@ -30,7 +31,7 @@ export function planTerminal(req: TerminalRequest, env: LaunchEnv): LaunchPlan |
   ];
 
   // Each builder lists [program, args] in documented order; unavailable programs are filtered out below.
-  const wsl = ['wsl.exe', ...(cwd === undefined ? [] : ['--cd', cwd]), '--', ...payload(false)];
+  const wsl = ['wsl.exe', ...(cwd === undefined ? [] : ['--cd', cwd]), '--exec', ...payload(false)];
   const table: Record<Platform, () => [string, string[]][]> = {
     wsl: () =>
       has('wsl.exe')
@@ -41,8 +42,9 @@ export function planTerminal(req: TerminalRequest, env: LaunchEnv): LaunchPlan |
         : [],
     win32: () => [
       wt(cwd === undefined ? [] : ['-d', cwd]),
-      // cmd parses this line twice (outer /c, then the started cmd.exe), so quote every token a second time.
-      ['cmd.exe', ['/c', 'start', ...[...(cwd === undefined ? [] : ['/D', cwd]), ...cmdPayload].map(quoteCmd)]],
+      // The outer cmd strips one caret layer, then the started cmd.exe itself reads the line (no argv parsing, so no
+      // quoteCmd `\"` escaping): caret-escape only, and leave the already-escaped inner line unwrapped.
+      ['cmd.exe', ['/c', 'start', ...[...(cwd === undefined ? [] : ['/D', /\s/.test(cwd) ? `"${cwd}"` : cwd]), ...cmdPayload].map(caretOnly)]],
     ],
     darwin: () => {
       const script = appleEscape(line(true));
