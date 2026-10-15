@@ -11,13 +11,20 @@ const failed = (): NewEvent => ({ type: 'RunFailed', reason: 'internal', message
 const cancelled = (): NewEvent => ({ type: 'RunCancelled' });
 const stepStarted = (): NewEvent => ({ type: 'StepStarted', node: 'n', itemId: 'i', attempt: 1 });
 
-const closed = (current: RunStatus, lastAttempt: number, events: NewEvent[]): void => {
-  expect(() => assertAppendAllowed(current, lastAttempt, events)).toThrow(RunClosedError);
+// Returns the thrown value; fails if nothing throws, so class/code checks cannot pass vacuously.
+const thrown = (fn: () => unknown): unknown => {
   try {
-    assertAppendAllowed(current, lastAttempt, events);
+    fn();
   } catch (e) {
-    expect((e as RunClosedError).code).toBe('E_RUN_CLOSED');
+    return e;
   }
+  throw new Error('expected a throw, but nothing was thrown');
+};
+
+const closed = (current: RunStatus, lastAttempt: number, events: NewEvent[]): void => {
+  const err = thrown(() => assertAppendAllowed(current, lastAttempt, events));
+  expect(err).toBeInstanceOf(RunClosedError);
+  expect(err).toMatchObject({ code: 'E_RUN_CLOSED' });
 };
 
 describe('status rules', () => {
@@ -78,6 +85,7 @@ describe('status rules', () => {
     expect(() => assertAppendAllowed('running', 1, [failed(), started(2), failed(), started(3)])).not.toThrow();
     closed('running', 1, [failed(), started(1)]);
     closed('running', 1, [failed(), started(2), failed(), started(2)]);
+    closed('running', 3, [started(1), failed(), started(2)]); // must beat every earlier attempt, not just the last
   });
 
   it('EL-4: an empty batch is allowed in every status', () => {
@@ -87,16 +95,17 @@ describe('status rules', () => {
   });
 
   it('EL-4: RunCreated in an append is rejected with E_BAD_EVENT', () => {
-    expect(() => assertAppendAllowed('queued', 0, [created()])).toThrow(InvalidEventError);
-    expect(() => assertAppendAllowed('running', 1, [stepStarted(), created()])).toThrow(InvalidEventError);
-    try {
-      assertAppendAllowed('queued', 0, [created()]);
-    } catch (e) {
-      expect((e as InvalidEventError).code).toBe('E_BAD_EVENT');
+    for (const [status, last, batch] of [
+      ['queued', 0, [created()]],
+      ['running', 1, [stepStarted(), created()]],
+    ] as const) {
+      const err = thrown(() => assertAppendAllowed(status, last, [...batch]));
+      expect(err).toBeInstanceOf(InvalidEventError);
+      expect(err).toMatchObject({ code: 'E_BAD_EVENT' });
     }
   });
 
-  it.each([
+  const transitions: [RunStatus | undefined, NewEvent, RunStatus][] = [
     [undefined, created(), 'queued'],
     ['running', created(), 'queued'], // total: RunCreated => queued regardless of current
     ['queued', started(1), 'running'],
@@ -107,16 +116,16 @@ describe('status rules', () => {
     ['queued', cancelled(), 'cancelled'],
     ['queued', stepStarted(), 'queued'], // any other event leaves status unchanged
     ['running', stepStarted(), 'running'],
-  ] as const)('EL-4: nextStatus(%s, %o) is %s', (current, event, expected) => {
-    expect(nextStatus(current, event)).toBe(expected);
-  });
+  ];
+  for (const [current, event, expected] of transitions) {
+    it(`EL-4: nextStatus(${current}, ${event.type}) is ${expected}`, () => {
+      expect(nextStatus(current, event)).toBe(expected);
+    });
+  }
 
   it('EL-4: nextStatus throws E_BAD_EVENT for a non-lifecycle event before RunCreated', () => {
-    expect(() => nextStatus(undefined, stepStarted())).toThrow(InvalidEventError);
-    try {
-      nextStatus(undefined, stepStarted());
-    } catch (e) {
-      expect((e as InvalidEventError).code).toBe('E_BAD_EVENT');
-    }
+    const err = thrown(() => nextStatus(undefined, stepStarted()));
+    expect(err).toBeInstanceOf(InvalidEventError);
+    expect(err).toMatchObject({ code: 'E_BAD_EVENT' });
   });
 });
