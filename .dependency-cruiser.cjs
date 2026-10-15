@@ -8,23 +8,25 @@
 // `import type` or a dynamic `import()` edge are legal (cli -> claude-integration is a dynamic edge, claude-integration
 // -> cli types is type-only, so that pair legitimately loops).
 
-// A module of `dir` (workspace-resolved source path) or the `@loopwork/<name>` specifier when it is not resolved.
-const mod = (dir, name) => `^${dir}/|(^|/)node_modules/@loopwork/${name}/|^@loopwork/${name}($|/)`;
-const graph = mod('packages/graph', 'graph');
-const eventlog = mod('packages/eventlog', 'eventlog');
-const windows = mod('packages/windows', 'windows');
-const engine = mod('packages/engine', 'engine');
-const runtime = mod('packages/runtime', 'runtime');
-const service = mod('packages/service', 'service');
-const uiServer = mod('packages/ui-server', 'ui-server');
-const mcp = mod('packages/mcp', 'mcp');
-const cli = mod('apps/cli', 'cli');
-const claude = mod('integrations/claude', 'claude-integration');
-const apps = '^apps/|^@loopwork/cli($|/)';
-const integrations = '^integrations/|^@loopwork/claude-integration($|/)';
+// A module of `dir` (workspace-resolved source path) or, when unresolved, its specifier. `names` lists every spelling of
+// the specifier: cli ships as `loopwork`, claude-integration is also filtered unscoped, ui-viewer is unscoped.
+const mod = (dir, ...names) => `^${dir}/|(^|/)node_modules/(${names.join('|')})/|^(${names.join('|')})($|/)`;
+const graph = mod('packages/graph', '@loopwork/graph');
+const eventlog = mod('packages/eventlog', '@loopwork/eventlog');
+const windows = mod('packages/windows', '@loopwork/windows');
+const engine = mod('packages/engine', '@loopwork/engine');
+const runtime = mod('packages/runtime', '@loopwork/runtime');
+const service = mod('packages/service', '@loopwork/service');
+const uiServer = mod('packages/ui-server', '@loopwork/ui-server');
+const mcp = mod('packages/mcp', '@loopwork/mcp');
+const cli = mod('apps/cli', '@loopwork/cli', 'loopwork');
+const uiViewer = mod('apps/ui-viewer', '@loopwork/ui-viewer', 'ui-viewer');
+const claude = mod('integrations/claude', '@loopwork/claude-integration', 'claude-integration');
+const apps = `^apps/|^(@loopwork/cli|loopwork|@loopwork/ui-viewer|ui-viewer)($|/)`;
+const integrations = '^integrations/|^(@loopwork/claude-integration|claude-integration)($|/)';
 // Any workspace package other than the given module patterns.
 const anyLoopworkExcept = (...except) => {
-  const any = '^(packages|apps|integrations)/[^/]+/|(^|/)node_modules/@loopwork/|^@loopwork/';
+  const any = `^(packages|apps|integrations)/[^/]+/|(^|/)node_modules/@loopwork/|^@loopwork/|^(loopwork|ui-viewer|claude-integration)($|/)`;
   return { path: any, pathNot: except };
 };
 const src = (dir) => `^${dir}/src/`;
@@ -56,7 +58,7 @@ module.exports = {
       dependencyTypesNot: notType,
     }),
     // 8. ui-viewer: value imports of graph only (type-only anything else), no node:*.
-    forbid('rule-08-ui-viewer-narrow', src('apps/ui-viewer'), { ...anyLoopworkExcept(graph), dependencyTypesNot: notType }),
+    forbid('rule-08-ui-viewer-narrow', src('apps/ui-viewer'), { ...anyLoopworkExcept(uiViewer, graph), dependencyTypesNot: notType }),
     forbid('rule-08-ui-viewer-narrow', src('apps/ui-viewer'), { dependencyTypes: ['core'] }),
     // 9. cli: dynamic import() of claude-integration only; claude-integration: cli types only.
     forbid('rule-09-cli-claude-dynamic-only', src('apps/cli'), { path: claude, dependencyTypesNot: ['dynamic-import'] }),
@@ -70,12 +72,14 @@ module.exports = {
     },
   ],
   options: {
-    // Built output (dist) stays visible as an import target (workspace packages resolve to packages/<pkg>/dist/index.js)
-    // but is never followed, so it adds no edges or cycles of its own.
+    // Built output (dist) is never followed, so it adds no edges or cycles of its own.
     doNotFollow: { path: '(^|/)(node_modules|dist)/' },
-    exclude: { path: '^scripts/test/fixtures|^coverage/' },
-    // Workspace packages declare `exports`; without this they resolve as unknown and `import type` edges lose their type.
-    enhancedResolveOptions: { exportsFields: ['exports'], conditionNames: ['import', 'require', 'node', 'default'] },
+    // Third-party packages are not architecture, except `pg` (rule 7), so their edges are dropped (this also keeps
+    // dist/ paths of tool packages out of the graph). Fixtures hold deliberate violations; coverage is generated.
+    exclude: { path: '^scripts/test/fixtures|^coverage/|^(?!.*node_modules/pg/).*node_modules/' },
+    // `@loopwork/<pkg>` resolves through the workspace symlink to packages/<pkg>/src/index.ts, never to a built dist/ (a
+    // dist leaf would hide cross-package cycles and need a build): ignore `exports`, take src/index before index.
+    enhancedResolveOptions: { exportsFields: [], mainFields: ['main'], mainFiles: ['src/index', 'index'] },
     tsPreCompilationDeps: true,
     tsConfig: { fileName: 'tsconfig.json' },
   },
