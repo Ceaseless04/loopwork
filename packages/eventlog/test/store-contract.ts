@@ -263,6 +263,22 @@ export function runStoreContract(name: string, makeStore: MakeStore, opts: { el6
       expect(seen).toEqual([1, 2, 3]);
     });
 
+    it('EL-2: RunStarted.attempt that is not a positive 32-bit integer is InvalidEventError, writes nothing and leaves the run appendable', async () => {
+      const store = await make();
+      const id = randomUUID();
+      await store.create(id, created());
+      for (const attempt of [1.5, 0, -1, 3e9, Number.NaN]) {
+        for (const batch of [[started(attempt)], [item(0), started(attempt)]]) {
+          const err = await store.append(id, batch, { expectedSeq: 1 }).catch((e: unknown) => e);
+          expect(err, `attempt ${attempt}`).toBeInstanceOf(InvalidEventError);
+          expect(err).toMatchObject({ code: 'E_BAD_EVENT' });
+        }
+      }
+      expect(seqs(await collect(store.read(id)))).toEqual([1]);
+      expect(await store.append(id, [started(1), { type: 'RunCancelled' }], { expectedSeq: 1 })).toEqual({ lastSeq: 3 });
+      expect(await store.getRun(id)).toMatchObject({ status: 'cancelled', lastSeq: 3 });
+    });
+
     it('EL-2: validation order is unknown run, then event type, then expectedSeq', async () => {
       const store = await make();
       const id = randomUUID();
@@ -417,6 +433,27 @@ export function runStoreContract(name: string, makeStore: MakeStore, opts: { el6
       const rowB = await store.getRun(b);
       if (!rowB) throw new Error('missing run');
       expect(await ids({ before: rowB.createdAt })).toEqual([a]);
+    });
+
+    it('contract: listRuns order is deterministic for equal createdAt (runId descending)', async () => {
+      const store = await make({ now: fixedClock });
+      const ids = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+      for (const id of ids) await store.create(id, created());
+      const expected = [...ids].sort().reverse();
+      expect((await store.listRuns({})).map((r) => r.runId)).toEqual(expected);
+      expect((await store.listRuns({ limit: 2 })).map((r) => r.runId)).toEqual(expected.slice(0, 2));
+    });
+
+    it('contract: listRuns before compares createdAt, not updatedAt', async () => {
+      const store = await make({ now: tickingClock() });
+      const [a, b, c] = [randomUUID(), randomUUID(), randomUUID()];
+      for (const id of [a, b, c]) await store.create(id, created());
+      await store.append(a, [item(0)], { expectedSeq: 1 }); // a is now the most recently updated
+      const rowB = await store.getRun(b);
+      const rowC = await store.getRun(c);
+      if (!rowB || !rowC) throw new Error('missing run');
+      expect((await store.listRuns({ before: rowB.createdAt })).map((r) => r.runId)).toEqual([a]);
+      expect((await store.listRuns({ before: rowC.createdAt })).map((r) => r.runId)).toEqual([b, a]);
     });
 
     it('contract: events returned by read and subscribe are copies', async () => {

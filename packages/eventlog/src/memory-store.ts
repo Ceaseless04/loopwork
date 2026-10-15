@@ -84,8 +84,8 @@ export class MemoryStore implements EventStore {
 
   async listRuns(f: { status?: RunStatus; limit?: number; before?: string }): Promise<RunRow[]> {
     const rows = [...this.runs.values()]
-      .reverse() // newest first
       .map((r) => r.row)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.runId.localeCompare(a.runId)) // newest first, runId desc tiebreak
       .filter((r) => (f.status === undefined || r.status === f.status) && (f.before === undefined || r.createdAt < f.before));
     return rows.slice(0, f.limit).map((r) => ({ ...r }));
   }

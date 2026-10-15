@@ -151,6 +151,12 @@ export class PgStore implements EventStore {
 
   private async tx<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
     const c = await this.pool.connect();
+    // pg-pool drops its idle error listener on checkout; without one a lost connection kills the process.
+    let broken = false;
+    const onError = () => {
+      broken = true;
+    };
+    c.on('error', onError);
     try {
       await c.query('begin');
       try {
@@ -162,7 +168,8 @@ export class PgStore implements EventStore {
         throw e;
       }
     } finally {
-      c.release();
+      c.off('error', onError);
+      c.release(broken); // a client that errored is destroyed, not returned to the pool
     }
   }
 }
