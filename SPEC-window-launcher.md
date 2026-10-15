@@ -49,7 +49,7 @@ type LaunchEnv = { platform: Platform; env: Record<string,string|undefined>; exi
 
 | Platform | Terminal | App window |
 |---|---|---|
-| `wsl` | `wt.exe -w new --title T wsl.exe --cd <cwd> -- <argv...>`; else `cmd.exe /c start wsl.exe ...` | Chrome/Edge `--app=<url>` via `/mnt/c/Program Files*/…/chrome.exe` or `msedge.exe`; else `wslview <url>`; else `cmd.exe /c start "" <url>` |
+| `wsl` | `wt.exe -w new --title T wsl.exe --cd <cwd> --exec <argv...>`; else `cmd.exe /c start wsl.exe ...` (`--exec`, not `--`: `--` hands the rest of the line to the distro's default shell, which would re-parse `argv`; `--exec` skips the shell. To be confirmed on a real WSL host: manual exit-gate checklist) | Chrome/Edge `--app=<url>` via `/mnt/c/Program Files*/…/chrome.exe` or `msedge.exe`; else `wslview <url>`; else `cmd.exe /c start "" <url>` |
 | `darwin` | `osascript` to open Terminal (or iTerm if `TERM_PROGRAM=iTerm.app`) running the command | `open -na "Google Chrome" --args --app=<url>`, else Edge, else `open <url>` |
 | `linux` | `$LOOPWORK_TERMINAL` prefix, else `x-terminal-emulator -e`, `gnome-terminal --`, `kitty`, `konsole -e`, `xterm -e` (requires `DISPLAY` or `WAYLAND_DISPLAY`) | `google-chrome`/`chromium`/`microsoft-edge` with `--app=<url>`, else `xdg-open <url>` |
 | `win32` | `wt.exe`, else `cmd.exe /c start` | Chrome/Edge `--app`, else `cmd.exe /c start "" <url>` |
