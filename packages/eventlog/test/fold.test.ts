@@ -208,6 +208,18 @@ describe('foldRun', () => {
     expect(foldRun(failedLog.slice(0, 2)).failure).toBeUndefined();
   });
 
+  it('EL-7: RunStarted after RunFailed clears failure and status is running', () => {
+    const failed1: NewEvent = { type: 'RunFailed', reason: 'step', message: 'boom', node: 'm' };
+    const failed2: NewEvent = { type: 'RunFailed', reason: 'budget', message: 'over' };
+    const resumed = foldRun(toLog([created(), runStarted(1), failed1, runStarted(2)]));
+    expect(resumed.failure).toBeUndefined();
+    expect(resumed.status).toBe('running');
+    expect(resumed.attempt).toBe(2);
+    const again = foldRun(toLog([created(), runStarted(1), failed1, runStarted(2), failed2]));
+    expect(again.status).toBe('failed');
+    expect(again.failure).toMatchObject({ reason: 'budget', message: 'over' });
+  });
+
   it('EL-7: per-node started/succeeded/failed counters and inFlight add/remove', () => {
     expect(nodeOf(upTo('mInFlight'), 'm')).toEqual({
       started: 2,
@@ -353,7 +365,13 @@ describe('foldRun', () => {
   it('EL-7: recentErrors records StepFailed and keeps the latest 50', () => {
     const one = foldRun(log).recentErrors;
     expect(one).toHaveLength(1);
-    expect(one[0]).toMatchObject({ node: 'm', itemId: 'src.out#1', error: { message: 'flaky' } });
+    expect(one[0]).toMatchObject({
+      seq: must(marks.mFailed, 'mark mFailed'),
+      node: 'm',
+      itemId: 'src.out#1',
+      attempt: 2,
+      error: { name: 'Error', message: 'flaky' },
+    });
 
     const failures = Array.from({ length: 120 }, (_, i) => stepFailed('m', `i${i}`, 1, `e${i}`));
     const errors = foldRun(toLog([created(), runStarted(1), ...failures])).recentErrors;
