@@ -322,6 +322,148 @@ describe('foldRun', () => {
     expect(s.edges.size).toBe(3);
   });
 
+  it('EL-7: nested frame exit alias is transitive', () => {
+    // foreach F { body exit = retry G { body exit = x } } -> snk
+    const nested: Flow = {
+      version: 1,
+      id: 'nested',
+      name: 'nested',
+      nodes: {
+        src: { kind: 'source', fn: 'range', out: {} },
+        F: {
+          kind: 'frame',
+          frame: 'foreach',
+          budgets: { maxIterations: 10, maxDurationMs: 1000 },
+          concurrency: 1,
+          in: {},
+          out: {},
+          body: {
+            nodes: {
+              G: {
+                kind: 'frame',
+                frame: 'retry',
+                budgets: { maxIterations: 10, maxDurationMs: 1000 },
+                maxAttempts: 3,
+                backoff: { kind: 'fixed', baseMs: 1 },
+                onExhausted: 'fail-run',
+                in: {},
+                out: {},
+                body: {
+                  nodes: { x: { kind: 'map', fn: 'identity', in: {}, out: {} } },
+                  edges: [],
+                  entry: { node: 'x', port: 'in' },
+                  exit: { node: 'x', port: 'out' },
+                },
+              },
+            },
+            edges: [],
+            entry: { node: 'G', port: 'in' },
+            exit: { node: 'G', port: 'out' },
+          },
+        },
+        snk: { kind: 'sink', fn: 'discard', in: {} },
+      },
+      edges: [
+        { from: { node: 'src', port: 'out' }, to: { node: 'F', port: 'in' } },
+        { from: { node: 'F', port: 'out' }, to: { node: 'snk', port: 'in' } },
+      ],
+    };
+    const out = 'src.out#0>F.G.x.out#0';
+    const s = foldRun(
+      toLog([
+        created(nested),
+        runStarted(1),
+        stepStarted('F.G.x', 'src.out#0'),
+        stepOk('F.G.x', 'src.out#0', [{ port: 'out', itemId: out }]),
+        stepStarted('snk', out),
+      ]),
+    );
+    expect(edgeOf(s, 'F.out->snk.in')).toEqual({ emitted: 1, consumed: 1 });
+  });
+
+  it('EL-7: while/until count emitted on the frame out edges only at FrameExited{condition}, not per iteration', () => {
+    const whileFlow: Flow = {
+      version: 1,
+      id: 'w',
+      name: 'w',
+      nodes: {
+        src: { kind: 'source', fn: 'range', out: {} },
+        W: {
+          kind: 'frame',
+          frame: 'while',
+          budgets: { maxIterations: 10, maxDurationMs: 1000 },
+          condition: 'lessThan',
+          in: {},
+          out: {},
+          body: {
+            nodes: { x: { kind: 'map', fn: 'increment', in: {}, out: {} } },
+            edges: [],
+            entry: { node: 'x', port: 'in' },
+            exit: { node: 'x', port: 'out' },
+          },
+        },
+        snk: { kind: 'sink', fn: 'discard', in: {} },
+      },
+      edges: [
+        { from: { node: 'src', port: 'out' }, to: { node: 'W', port: 'in' } },
+        { from: { node: 'W', port: 'out' }, to: { node: 'snk', port: 'in' } },
+      ],
+    };
+    const first = 'src.out#0';
+    const states = [first, `${first}>W.x.out#0`, `${first}>W.x.out#0>W.x.out#0`, `${first}>W.x.out#0>W.x.out#0>W.x.out#0`];
+    const body: NewEvent[] = [];
+    for (let i = 1; i <= 3; i++) {
+      const prev = must(states[i - 1], 'state');
+      body.push(
+        { type: 'IterationStarted', node: 'W', itemId: first, iteration: i },
+        stepStarted('W.x', prev),
+        stepOk('W.x', prev, [{ port: 'out', itemId: must(states[i], 'state') }]),
+        { type: 'IterationEnded', node: 'W', itemId: first, iteration: i, elapsedMs: 1 },
+      );
+    }
+    const finalState = must(states[3], 'state');
+    const head: NewEvent[] = [
+      created(whileFlow),
+      runStarted(1),
+      { type: 'FrameEntered', node: 'W', itemId: first, frame: 'while' },
+      ...body,
+    ];
+    const edge = 'W.out->snk.in';
+    expect(edgeOf(foldRun(toLog(head)), edge)).toEqual({ emitted: 0, consumed: 0 });
+    const exited = foldRun(
+      toLog([...head, { type: 'FrameExited', node: 'W', itemId: first, reason: 'condition' }]),
+    );
+    expect(edgeOf(exited, edge)).toEqual({ emitted: 1, consumed: 0 });
+    const consumed = foldRun(
+      toLog([
+        ...head,
+        { type: 'FrameExited', node: 'W', itemId: first, reason: 'condition' },
+        stepStarted('snk', finalState),
+      ]),
+    );
+    expect(edgeOf(consumed, edge)).toEqual({ emitted: 1, consumed: 1 });
+    expect(edgeOf(consumed, 'src.out->W.in')).toEqual({ emitted: 0, consumed: 1 });
+  });
+
+  it('EL-7: a structuredClone\'d state keeps counting edges', () => {
+    const n = must(marks.mDone, 'mark mDone');
+    const prefix = news.slice(0, n);
+    const more: NewEvent[] = [
+      { type: 'ItemEmitted', node: 'src', itemId: 'src.out#2', value: 2 },
+      stepStarted('m', 'src.out#2'),
+    ];
+    const extra = toLog([...prefix, ...more]).slice(n);
+    const clone = structuredClone(foldRun(toLog(prefix)));
+    const twin = foldRun(toLog(prefix));
+    for (const e of extra) {
+      applyEvent(clone, e);
+      applyEvent(twin, e);
+    }
+    expect(edgeOf(twin, E_SRC_M)).toEqual({ emitted: 3, consumed: 3 });
+    expect(edgeOf(clone, E_SRC_M)).toEqual({ emitted: 3, consumed: 3 });
+    expect(clone.edges).toEqual(twin.edges);
+  });
+
   it('EL-7: per-frame iterations, active set, elapsedMs and exited', () => {
     let f = frameOf(upTo('entered'), 'loop');
     expect(f).toEqual({ iterationsStarted: 0, iterationsEnded: 0, active: new Set([A, B]), elapsedMs: 0, exited: false });
@@ -396,6 +538,8 @@ describe('foldRun', () => {
       ['n', 'i:k', 'x'],
       ['n', 'i', 'k:x'],
       ['n:i', 'k', 'x'],
+      ['n1', 'i', 'k'], // differs only in node
+      ['n2', 'i', 'k'],
     ];
     expect(new Set(triples.map(([n, i, k]) => sideEffectKey(n, i, k))).size).toBe(triples.length);
 
@@ -404,9 +548,13 @@ describe('foldRun', () => {
         created(),
         { type: 'SideEffect', node: 'a.b', itemId: 'c', key: 'k', value: 1 },
         { type: 'SideEffect', node: 'a', itemId: 'b.c', key: 'k', value: 2 },
+        { type: 'SideEffect', node: 'n1', itemId: 'i', key: 'k', value: 3 },
+        { type: 'SideEffect', node: 'n2', itemId: 'i', key: 'k', value: 4 },
       ]),
     );
-    expect(s.sideEffects.size).toBe(2);
+    expect(s.sideEffects.size).toBe(4);
+    expect(s.sideEffects.get(sideEffectKey('n1', 'i', 'k'))).toBe(3);
+    expect(s.sideEffects.get(sideEffectKey('n2', 'i', 'k'))).toBe(4);
     expect(s.sideEffects.get(sideEffectKey('a.b', 'c', 'k'))).toBe(1);
     expect(s.sideEffects.get(sideEffectKey('a', 'b.c', 'k'))).toBe(2);
   });
