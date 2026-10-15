@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { getEventListeners } from 'node:events';
 import type { Flow } from '@loopwork/graph';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { LoopworkEvent, NewEvent } from '../src/events.js';
@@ -16,7 +17,8 @@ const tickingClock = () => {
   return () => new Date((t += 1000));
 };
 
-const flow = { version: 1, id: 'f', name: 'f', nodes: {}, edges: [] } as Flow;
+// id and name differ so a flowId/flowName mix-up is visible.
+const flow = { version: 1, id: 'flow-id', name: 'Flow Name', nodes: {}, edges: [] } as Flow;
 const created = (): Extract<NewEvent, { type: 'RunCreated' }> => ({ type: 'RunCreated', flow, createdBy: 'cli' });
 const started = (attempt: number): NewEvent => ({ type: 'RunStarted', workerId: 'w1', attempt });
 const failed = (): NewEvent => ({ type: 'RunFailed', reason: 'internal', message: 'boom' });
@@ -193,6 +195,144 @@ export function runStoreContract(name: string, makeStore: MakeStore): void {
       expect(await within(collect(store.subscribe(id, { fromSeq: 1, signal: ac.signal })))).toEqual([]);
     });
 
+    it('EL-1: limit 0 returns nothing', async () => {
+      const store = await make();
+      const id = randomUUID();
+      await store.create(id, created());
+      await store.append(id, [item(0)], { expectedSeq: 1 });
+      expect(await collect(store.read(id, { limit: 0 }))).toEqual([]);
+      expect(await store.listRuns({ limit: 0 })).toEqual([]);
+    });
+
+    it('EL-1: fromSeq below 1 starts at seq 1 for read and subscribe', async () => {
+      const store = await make({ pollMs: 5 });
+      const id = randomUUID();
+      await store.create(id, created());
+      await store.append(id, [item(0), item(1)], { expectedSeq: 1 });
+      expect(seqs(await collect(store.read(id, { fromSeq: 0 })))).toEqual([1, 2, 3]);
+      const ac = new AbortController();
+      const seen: number[] = [];
+      for await (const e of store.subscribe(id, { fromSeq: 0, signal: ac.signal })) {
+        seen.push(e.seq);
+        if (e.seq === 3) ac.abort();
+      }
+      expect(seen).toEqual([1, 2, 3]);
+    });
+
+    it('EL-2: validation order is unknown run, then event type, then expectedSeq', async () => {
+      const store = await make();
+      const id = randomUUID();
+      const bad = { type: 'NotAnEvent' } as unknown as NewEvent;
+      const unknown = await store.append(id, [bad], { expectedSeq: 7 }).catch((e: unknown) => e);
+      expect(unknown).toBeInstanceOf(UnknownRunError);
+      await store.create(id, created());
+      const stale = await store.append(id, [bad], { expectedSeq: 7 }).catch((e: unknown) => e);
+      expect(stale).toBeInstanceOf(InvalidEventError);
+    });
+
+    it('EL-4: the resume attempt must exceed the highest RunStarted attempt seen', async () => {
+      const store = await make();
+      const id = randomUUID();
+      await store.create(id, created());
+      await store.append(id, [started(1), failed()], { expectedSeq: 1 });
+      await store.append(id, [started(2)], { expectedSeq: 3 });
+      await store.append(id, [failed()], { expectedSeq: 4 });
+      const err = await store.append(id, [started(2)], { expectedSeq: 5 }).catch((e: unknown) => e);
+      expect(err).toMatchObject({ code: 'E_RUN_CLOSED' });
+      expect(await store.append(id, [started(3)], { expectedSeq: 5 })).toEqual({ lastSeq: 6 });
+    });
+
+    it('create and append store copies of the caller events', async () => {
+      const store = await make();
+      const id = randomUUID();
+      const first = { ...created(), flow: { ...flow } } as Extract<NewEvent, { type: 'RunCreated' }>;
+      const value = { nested: [1] };
+      const emitted = { type: 'ItemEmitted', node: 'src', itemId: 'src.out#0', value } as NewEvent;
+      await store.create(id, first);
+      await store.append(id, [emitted], { expectedSeq: 1 });
+      first.flow.name = 'mutated';
+      value.nested.push(2);
+      (emitted as { itemId: string }).itemId = 'mutated';
+      const events = await collect(store.read(id));
+      expect((events[0] as { flow: Flow }).flow.name).toBe('Flow Name');
+      expect(events[1]).toMatchObject({ itemId: 'src.out#0', value: { nested: [1] } });
+    });
+
+    it('getRun and listRuns return copies', async () => {
+      const store = await make();
+      const id = randomUUID();
+      await store.create(id, created());
+      const before = structuredClone(await store.getRun(id));
+      const row = await store.getRun(id);
+      if (!row) throw new Error('missing run');
+      row.status = 'failed';
+      row.lastSeq = 99;
+      expect(await store.getRun(id)).toEqual(before);
+      const [listed] = await store.listRuns({});
+      if (!listed) throw new Error('missing run');
+      listed.status = 'failed';
+      listed.lastSeq = 99;
+      expect(await store.getRun(id)).toEqual(before);
+    });
+
+    it('updatedAt advances on append while createdAt stays', async () => {
+      const store = await make({ now: tickingClock() });
+      const id = randomUUID();
+      await store.create(id, created());
+      const first = await store.getRun(id);
+      await store.append(id, [item(0)], { expectedSeq: 1 });
+      const second = await store.getRun(id);
+      if (!first || !second) throw new Error('missing run');
+      expect(second.createdAt).toBe(first.createdAt);
+      expect(Date.parse(second.updatedAt)).toBeGreaterThan(Date.parse(first.updatedAt));
+    });
+
+    it('EL-5: no events are delivered after the consumer aborts partway through history', async () => {
+      const store = await make({ pollMs: 5 });
+      const id = randomUUID();
+      await store.create(id, created());
+      await store.append(id, Array.from({ length: 20 }, (_, i) => item(i)), { expectedSeq: 1 });
+      const ac = new AbortController();
+      const seen: number[] = [];
+      await within(
+        (async () => {
+          for await (const e of store.subscribe(id, { fromSeq: 1, signal: ac.signal })) {
+            seen.push(e.seq);
+            if (e.seq === 5) ac.abort();
+          }
+        })(),
+      );
+      expect(seen).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    it('EL-5: abort ends an idle subscriber promptly even with a long pollMs', async () => {
+      const store = await make({ pollMs: 10_000 });
+      const id = randomUUID();
+      await store.create(id, created());
+      const ac = new AbortController();
+      const reader = collect(store.subscribe(id, { fromSeq: 2, signal: ac.signal }));
+      await sleep(50);
+      ac.abort();
+      expect(await within(reader, 1000)).toEqual([]);
+    });
+
+    it('EL-5: breaking out of subscribe repeatedly leaves no abort listeners on a shared signal', async () => {
+      const store = await make({ pollMs: 5 });
+      const id = randomUUID();
+      await store.create(id, created());
+      const ac = new AbortController();
+      for (let i = 0; i < 20; i++) {
+        // The subscriber is idle (waiting for seq i + 2) when the append arrives, then breaks out.
+        const appended = sleep(10).then(() => store.append(id, [item(i)], { expectedSeq: i + 1 }));
+        for await (const e of store.subscribe(id, { fromSeq: i + 2, signal: ac.signal })) {
+          expect(e.seq).toBe(i + 2);
+          break;
+        }
+        await appended;
+      }
+      expect(getEventListeners(ac.signal, 'abort')).toHaveLength(0);
+    });
+
     it('getRun returns the projection row and undefined for an unknown run', async () => {
       const store = await make({ now: fixedClock });
       const id = randomUUID();
@@ -200,8 +340,8 @@ export function runStoreContract(name: string, makeStore: MakeStore): void {
       await store.create(id, created());
       expect(await store.getRun(id)).toEqual({
         runId: id,
-        flowId: 'f',
-        flowName: 'f',
+        flowId: 'flow-id',
+        flowName: 'Flow Name',
         status: 'queued',
         createdAt: FIXED,
         updatedAt: FIXED,
@@ -246,7 +386,7 @@ export function runStoreContract(name: string, makeStore: MakeStore): void {
       (second as Record<string, unknown>).value = 'mutated';
       const again = await collect(store.read(id));
       expect(seqs(again)).toEqual([1, 2]);
-      expect((again[0] as { flow: Flow }).flow.name).toBe('f');
+      expect((again[0] as { flow: Flow }).flow.name).toBe('Flow Name');
       expect((again[1] as { value: unknown }).value).toBe(0);
       const ac = new AbortController();
       for await (const e of store.subscribe(id, { fromSeq: 1, signal: ac.signal })) {
