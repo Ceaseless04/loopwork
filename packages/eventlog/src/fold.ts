@@ -48,35 +48,50 @@ export function sideEffectKey(node: string, itemId: string, key: string): string
   return JSON.stringify([node, itemId, key]);
 }
 
-// Per-run lookup built once on RunCreated so each event costs O(edges of one endpoint), not O(all edges).
+// Per-run lookup so each event costs O(edges of one endpoint), not O(all edges).
 // endpoint `node.port` -> the edges leaving it (sharing the counters held in state.edges).
-type Lookup = Map<string, { to: string; counter: Counter }[]>;
+// `silent` entries only take part in consumption (a while/until body exit is not an emission on the frame's `out`).
+type Lookup = Map<string, { to: string; counter: Counter; silent: boolean }[]>;
 const lookups = new WeakMap<RunState, Lookup>();
 
 // Edge id format is defined in SPEC-graph-model.md; @loopwork/graph's edgeId is not importable at runtime here.
 const edgeId = (e: Edge): string => `${e.from.node}.${e.from.port}->${e.to.node}.${e.to.port}`;
 
-function indexScope(state: RunState, lookup: Lookup, nodes: Record<string, FlowNode>, edges: Edge[], prefix: string): void {
+type FrameRef = { id: string; exit: string; silent: boolean };
+
+// Registers the scope's edges (reusing counters already in state.edges) and collects frames outermost-first.
+function indexScope(state: RunState, lookup: Lookup, frames: FrameRef[], nodes: Record<string, FlowNode>, edges: Edge[], prefix: string): void {
   for (const { from, to } of edges) {
     const scoped = { from: { node: prefix + from.node, port: from.port }, to: { node: prefix + to.node, port: to.port } };
-    const counter = { emitted: 0, consumed: 0 };
-    state.edges.set(edgeId(scoped), counter);
+    const id = edgeId(scoped);
+    let counter = state.edges.get(id);
+    if (!counter) state.edges.set(id, (counter = { emitted: 0, consumed: 0 }));
     const key = `${scoped.from.node}.${scoped.from.port}`;
     const list = lookup.get(key) ?? [];
-    list.push({ to: scoped.to.node, counter });
+    list.push({ to: scoped.to.node, counter, silent: false });
     lookup.set(key, list);
   }
   for (const [id, node] of Object.entries(nodes)) {
     if (node.kind !== 'frame') continue;
     const frame = prefix + id;
-    indexScope(state, lookup, node.body.nodes, node.body.edges, `${frame}.`);
-    // the body exit endpoint feeds whatever the frame's `out` feeds
-    const outs = lookup.get(`${frame}.out`);
-    if (outs) {
-      const exitKey = `${frame}.${node.body.exit.node}.${node.body.exit.port}`;
-      lookup.set(exitKey, [...(lookup.get(exitKey) ?? []), ...outs]);
-    }
+    const exit = `${frame}.${node.body.exit.node}.${node.body.exit.port}`;
+    frames.push({ id: frame, exit, silent: node.frame === 'while' || node.frame === 'until' });
+    indexScope(state, lookup, frames, node.body.nodes, node.body.edges, `${frame}.`);
   }
+}
+
+function buildLookup(state: RunState, flow: Flow): Lookup {
+  const lookup: Lookup = new Map();
+  const frames: FrameRef[] = [];
+  indexScope(state, lookup, frames, flow.nodes, flow.edges, '');
+  // The body exit endpoint feeds whatever the frame's `out` feeds. Outermost-first, so an outer alias is already on
+  // `inner.out` when the inner frame aliases its own exit: nested exits resolve transitively.
+  for (const { id, exit, silent } of frames) {
+    const outs = lookup.get(`${id}.out`);
+    if (!outs) continue;
+    lookup.set(exit, [...(lookup.get(exit) ?? []), ...(silent ? outs.map((o) => ({ ...o, silent: true })) : outs)]);
+  }
+  return lookup;
 }
 
 // itemIds encode their producer (SPEC-event-log.md): `src.out#0`, `${input}>${node}.${port}#${k}`.
@@ -91,7 +106,7 @@ function consume(lookup: Lookup | undefined, node: string, itemId: string): void
 }
 
 function emit(lookup: Lookup | undefined, endpoint: string): void {
-  for (const edge of lookup?.get(endpoint) ?? []) edge.counter.emitted++;
+  for (const edge of lookup?.get(endpoint) ?? []) if (!edge.silent) edge.counter.emitted++;
 }
 
 function nodeOf(state: RunState, id: string) {
@@ -112,13 +127,12 @@ function frameOf(state: RunState, id: string) {
 export function applyEvent(state: RunState, e: LoopworkEvent): RunState {
   state.status = nextStatus(state.status, e);
   state.lastSeq = e.seq;
-  const lookup = lookups.get(state);
+  let lookup = lookups.get(state);
+  if (!lookup && state.flow) lookups.set(state, (lookup = buildLookup(state, state.flow))); // e.g. a structuredClone'd state
   switch (e.type) {
     case 'RunCreated': {
       state.flow = e.flow;
-      const index: Lookup = new Map();
-      indexScope(state, index, e.flow.nodes, e.flow.edges, '');
-      lookups.set(state, index);
+      lookups.set(state, buildLookup(state, e.flow));
       break;
     }
     case 'RunStarted':
@@ -177,6 +191,7 @@ export function applyEvent(state: RunState, e: LoopworkEvent): RunState {
       const f = frameOf(state, e.node);
       f.active.delete(e.itemId);
       f.exited = true;
+      if (e.reason === 'condition') emit(lookup, `${e.node}.out`); // while/until emit only their final state
       break;
     }
     default:
