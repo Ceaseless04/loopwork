@@ -95,6 +95,43 @@ export function runStoreContract(name: string, makeStore: MakeStore): void {
       expect((await store.getRun(id))?.lastSeq).toBe(2);
     });
 
+    it('EL-2: two concurrent appends with the same expectedSeq: exactly one wins, the other fails with SeqConflictError', async () => {
+      const store = await make();
+      const id = randomUUID();
+      await store.create(id, created());
+      const results = await Promise.allSettled([
+        store.append(id, [item(0)], { expectedSeq: 1 }),
+        store.append(id, [item(1)], { expectedSeq: 1 }),
+      ]);
+      const won = results.filter((r) => r.status === 'fulfilled');
+      const lost = results.filter((r) => r.status === 'rejected');
+      expect(won).toHaveLength(1);
+      expect(won[0]).toMatchObject({ value: { lastSeq: 2 } });
+      expect(lost).toHaveLength(1);
+      expect(lost[0]?.reason).toBeInstanceOf(SeqConflictError);
+      expect(lost[0]?.reason).toMatchObject({ code: 'E_SEQ_CONFLICT' });
+      expect(seqs(await collect(store.read(id)))).toEqual([1, 2]);
+      expect((await store.getRun(id))?.lastSeq).toBe(2);
+    });
+
+    it('EL-2: eight racers on the same expectedSeq: one wins, seven SeqConflictError, seq stays gapless', async () => {
+      const store = await make();
+      const id = randomUUID();
+      await store.create(id, created());
+      const results = await Promise.allSettled(
+        Array.from({ length: 8 }, (_, i) => store.append(id, [item(i)], { expectedSeq: 1 })),
+      );
+      const lost = results.filter((r) => r.status === 'rejected');
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      expect(lost).toHaveLength(7);
+      for (const r of lost) {
+        expect(r.reason).toBeInstanceOf(SeqConflictError);
+        expect(r.reason).toMatchObject({ code: 'E_SEQ_CONFLICT' });
+      }
+      expect(seqs(await collect(store.read(id)))).toEqual([1, 2]);
+      expect((await store.getRun(id))?.lastSeq).toBe(2);
+    });
+
     it('EL-2: a batch with an invalid event writes nothing', async () => {
       const store = await make();
       const id = randomUUID();
@@ -180,7 +217,12 @@ export function runStoreContract(name: string, makeStore: MakeStore): void {
       const reader = (async () => {
         for await (const e of store.subscribe(id, { fromSeq: 3, signal: ac.signal })) seen.push(e.seq);
       })();
-      await sleep(50);
+      await within(
+        (async () => {
+          while (seen.length < 1) await sleep(5);
+        })(),
+      );
+      await sleep(50); // several poll periods: nothing more may arrive
       expect(seen).toEqual([3]);
       ac.abort();
       await within(reader);
@@ -242,7 +284,7 @@ export function runStoreContract(name: string, makeStore: MakeStore): void {
       expect(await store.append(id, [started(3)], { expectedSeq: 5 })).toEqual({ lastSeq: 6 });
     });
 
-    it('create and append store copies of the caller events', async () => {
+    it('contract: create and append store copies of the caller events', async () => {
       const store = await make();
       const id = randomUUID();
       const first = { ...created(), flow: { ...flow } } as Extract<NewEvent, { type: 'RunCreated' }>;
@@ -258,7 +300,7 @@ export function runStoreContract(name: string, makeStore: MakeStore): void {
       expect(events[1]).toMatchObject({ itemId: 'src.out#0', value: { nested: [1] } });
     });
 
-    it('getRun and listRuns return copies', async () => {
+    it('contract: getRun and listRuns return copies', async () => {
       const store = await make();
       const id = randomUUID();
       await store.create(id, created());
@@ -275,7 +317,7 @@ export function runStoreContract(name: string, makeStore: MakeStore): void {
       expect(await store.getRun(id)).toEqual(before);
     });
 
-    it('updatedAt advances on append while createdAt stays', async () => {
+    it('contract: updatedAt advances on append while createdAt stays', async () => {
       const store = await make({ now: tickingClock() });
       const id = randomUUID();
       await store.create(id, created());
@@ -333,7 +375,7 @@ export function runStoreContract(name: string, makeStore: MakeStore): void {
       expect(getEventListeners(ac.signal, 'abort')).toHaveLength(0);
     });
 
-    it('getRun returns the projection row and undefined for an unknown run', async () => {
+    it('contract: getRun returns the projection row and undefined for an unknown run', async () => {
       const store = await make({ now: fixedClock });
       const id = randomUUID();
       expect(await store.getRun(id)).toBeUndefined();
@@ -351,7 +393,7 @@ export function runStoreContract(name: string, makeStore: MakeStore): void {
       expect(await store.getRun(id)).toMatchObject({ status: 'running', lastSeq: 2 });
     });
 
-    it('stored events carry the ts from the injected clock', async () => {
+    it('contract: stored events carry the ts from the injected clock', async () => {
       const store = await make({ now: fixedClock });
       const id = randomUUID();
       await store.create(id, created());
@@ -359,7 +401,7 @@ export function runStoreContract(name: string, makeStore: MakeStore): void {
       expect((await collect(store.read(id))).map((e) => e.ts)).toEqual([FIXED, FIXED]);
     });
 
-    it('listRuns returns newest first and honors status, limit and before', async () => {
+    it('contract: listRuns returns newest first and honors status, limit and before', async () => {
       const store = await make({ now: tickingClock() });
       const [a, b, c] = [randomUUID(), randomUUID(), randomUUID()];
       for (const id of [a, b, c]) await store.create(id, created());
@@ -375,7 +417,7 @@ export function runStoreContract(name: string, makeStore: MakeStore): void {
       expect(await ids({ before: rowB.createdAt })).toEqual([a]);
     });
 
-    it('events returned by read and subscribe are copies', async () => {
+    it('contract: events returned by read and subscribe are copies', async () => {
       const store = await make({ pollMs: 5 });
       const id = randomUUID();
       await store.create(id, created());
