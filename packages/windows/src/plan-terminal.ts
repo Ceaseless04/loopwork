@@ -6,7 +6,7 @@ const KEEP_TAIL = '; printf "\\n[loopwork exited — press Enter to close]"; rea
 const wtEscape = (s: string): string => s.replaceAll(';', '\\;');
 // AppleScript string literals only need `\` and `"` escaped.
 const appleEscape = (s: string): string => s.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
-const caretOnly = (s: string): string => s.replace(/[()%!^"<>&|]/g, '^$&');
+export const caretOnly = (s: string): string => s.replace(/[()%!^"<>&|]/g, '^$&');
 const LINUX_TERMINALS: [string, string[]][] = [
   ['x-terminal-emulator', ['-e']],
   ['gnome-terminal', ['--']],
