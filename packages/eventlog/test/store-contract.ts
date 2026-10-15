@@ -37,7 +37,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const within = <T>(p: Promise<T>, ms = 5000): Promise<T> =>
   Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`not done within ${ms}ms`)), ms))]);
 
-export function runStoreContract(name: string, makeStore: MakeStore, opts: { el6Seeds?: number } = {}): void {
+export function runStoreContract(name: string, makeStore: MakeStore, opts: { el6Seeds?: number; timeoutMs?: number } = {}): void {
   describe(`${name} store contract`, () => {
     const open: StoreHarness[] = [];
     const make = async (opts?: Parameters<MakeStore>[0]) => {
@@ -114,7 +114,7 @@ export function runStoreContract(name: string, makeStore: MakeStore, opts: { el6
       expect(lost[0]?.reason).toMatchObject({ code: 'E_SEQ_CONFLICT' });
       expect(seqs(await collect(store.read(id)))).toEqual([1, 2]);
       expect((await store.getRun(id))?.lastSeq).toBe(2);
-    });
+    }, opts.timeoutMs);
 
     it('EL-2: eight racers on the same expectedSeq: one wins, seven SeqConflictError, seq stays gapless', async () => {
       const store = await make();
@@ -132,7 +132,7 @@ export function runStoreContract(name: string, makeStore: MakeStore, opts: { el6
       }
       expect(seqs(await collect(store.read(id)))).toEqual([1, 2]);
       expect((await store.getRun(id))?.lastSeq).toBe(2);
-    });
+    }, opts.timeoutMs);
 
     it('EL-2: a batch with an invalid event writes nothing', async () => {
       const store = await make();
@@ -461,6 +461,6 @@ export function runStoreContract(name: string, makeStore: MakeStore, opts: { el6
           await check();
         }
       }
-    });
+    }, opts.timeoutMs);
   });
 }
