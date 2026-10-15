@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import pg from 'pg';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MigrationConflictError, migrate, SchemaTooNewError } from '../src/migrate.js';
 import { withTestSchema } from './pg-helper.js';
@@ -9,10 +10,12 @@ import type { TestSchema } from './pg-helper.js';
 describe('migrate', () => {
   let t: TestSchema;
   const tmpDirs: string[] = [];
+  const extraPools: pg.Pool[] = [];
   beforeEach(async () => {
     t = await withTestSchema();
   });
   afterEach(async () => {
+    await Promise.all(extraPools.splice(0).map((p) => p.end()));
     await t.dispose();
     await Promise.all(tmpDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
   });
@@ -82,5 +85,67 @@ describe('migrate', () => {
       `select to_regclass('runs') as runs, to_regclass('other') as other`,
     );
     expect(found.rows[0]).toEqual({ runs: null, other: null });
+  });
+
+  const tableExists = async (name: string): Promise<boolean> =>
+    (await t.pool.query<{ r: string | null }>('select to_regclass($1) as r', [name])).rows[0]?.r != null;
+
+  it('EL-9: versions are ordered numerically, not lexicographically (9 before 10)', async () => {
+    const dir = await extraDir({
+      '10_ten.sql': 'create table ten (id int primary key references nine);',
+      '9_nine.sql': 'create table nine (id int primary key);',
+    });
+    expect(await migrate(t.pool, { dirs: [dir] })).toEqual({ applied: [1, 9, 10] });
+  });
+
+  it('EL-9: the duplicate-version conflict is by numeric version (0001 vs 001)', async () => {
+    const dir = await extraDir({ '0001_x.sql': 'create table x (id int primary key);' });
+    await expect(migrate(t.pool, { dirs: [dir] })).rejects.toBeInstanceOf(MigrationConflictError);
+    expect(await tableExists('runs')).toBe(false);
+    expect(await tableExists('x')).toBe(false);
+  });
+
+  it('EL-9: refuses a schema whose applied versions are below the max known but no longer declared', async () => {
+    const dir = await extraDir({
+      '002_a.sql': 'create table a (id int primary key);',
+      '003_b.sql': 'create table b (id int primary key);',
+    });
+    expect(await migrate(t.pool, { dirs: [dir] })).toEqual({ applied: [1, 2, 3] });
+    await expect(migrate(t.pool)).rejects.toBeInstanceOf(SchemaTooNewError);
+  });
+
+  it('EL-9: each migration file runs in a transaction together with its schema_migrations row', async () => {
+    const dir = await extraDir({
+      '002_self.sql': 'create table self (id int primary key); insert into schema_migrations (version) values (2);',
+    });
+    await expect(migrate(t.pool, { dirs: [dir] })).rejects.toThrow();
+    expect(await tableExists('self')).toBe(false);
+    expect(await versions()).toEqual([1]);
+  });
+
+  it('EL-9: a failing migration propagates its error, leaves nothing behind, and applies once fixed', async () => {
+    const dir = await extraDir({ '002_bad.sql': 'create table bad (id int primary key); select 1/0;' });
+    await expect(migrate(t.pool, { dirs: [dir] })).rejects.toThrow(/division by zero/);
+    expect(await tableExists('bad')).toBe(false);
+    expect(await versions()).toEqual([1]);
+    await writeFile(join(dir, '002_bad.sql'), 'create table bad (id int primary key);');
+    expect(await migrate(t.pool, { dirs: [dir] })).toEqual({ applied: [2] });
+    expect(await tableExists('bad')).toBe(true);
+  });
+
+  it('EL-9: files that are not .sql are ignored', async () => {
+    const dir = await extraDir({ '002_notes.txt': 'this is not sql' });
+    expect(await migrate(t.pool, { dirs: [dir] })).toEqual({ applied: [1] });
+  });
+
+  it('EL-9: migrate works on a pool with a single connection', { timeout: 15_000 }, async () => {
+    const single = new pg.Pool({
+      connectionString: process.env.LOOPWORK_TEST_DATABASE_URL,
+      options: `-c search_path=${t.schema}`,
+      max: 1,
+    });
+    extraPools.push(single);
+    expect(await migrate(single)).toEqual({ applied: [1] });
+    expect(await migrate(single)).toEqual({ applied: [] });
   });
 });
