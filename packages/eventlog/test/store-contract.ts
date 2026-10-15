@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { LoopworkEvent, NewEvent } from '../src/events.js';
 import { InvalidEventError, RunClosedError, RunExistsError, SeqConflictError, UnknownRunError } from '../src/store.js';
 import type { EventStore } from '../src/store.js';
+import { foldRun, statusOf } from '../src/fold.js';
+import { genValidLog, mulberry32 } from './valid-log.js';
 
 export type StoreHarness = { store: EventStore; dispose(): Promise<void> };
 // Every call must return a fresh, empty store. pollMs is a constructor option; now is the store's clock.
@@ -35,7 +37,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const within = <T>(p: Promise<T>, ms = 5000): Promise<T> =>
   Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`not done within ${ms}ms`)), ms))]);
 
-export function runStoreContract(name: string, makeStore: MakeStore): void {
+export function runStoreContract(name: string, makeStore: MakeStore, opts: { el6Seeds?: number } = {}): void {
   describe(`${name} store contract`, () => {
     const open: StoreHarness[] = [];
     const make = async (opts?: Parameters<MakeStore>[0]) => {
@@ -436,6 +438,29 @@ export function runStoreContract(name: string, makeStore: MakeStore): void {
         if (e.type === 'ItemEmitted') ac.abort();
       }
       expect(seqs(await collect(store.read(id)))).toEqual([1, 2]);
+    });
+
+    it('EL-6: runs projection always equals statusOf(foldRun(events))', async () => {
+      const store = await make();
+      for (let seed = 1; seed <= (opts.el6Seeds ?? 200); seed++) {
+        const [first, ...rest] = genValidLog(seed);
+        const id = randomUUID();
+        const rnd = mulberry32(seed ^ 0x9e3779b9); // batch boundaries
+        await store.create(id, first as Extract<NewEvent, { type: 'RunCreated' }>);
+        let lastSeq = 1;
+        const check = async () => {
+          const folded = foldRun(await collect(store.read(id)));
+          expect(await store.getRun(id), `seed ${seed} at seq ${lastSeq}`).toMatchObject({ status: statusOf(folded), lastSeq: folded.lastSeq });
+          expect(folded.lastSeq).toBe(lastSeq);
+        };
+        await check();
+        for (let i = 0; i < rest.length; ) {
+          const size = 1 + Math.floor(rnd() * 5);
+          lastSeq = (await store.append(id, rest.slice(i, i + size), { expectedSeq: lastSeq })).lastSeq;
+          i += size;
+          await check();
+        }
+      }
     });
   });
 }
