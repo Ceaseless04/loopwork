@@ -43,33 +43,44 @@ describe('openTerminal', () => {
 
   it('WL-8: a failed first step falls through to the next', async () => {
     const { spawn, calls, unrefs } = fakeSpawn(enoent('wt.exe'), 'ok');
-    expect(await openTerminal({ argv }, fixtures.wsl, { spawn })).toEqual({ status: 'launched', via: 'cmd.exe' });
+    expect(await openTerminal({ argv }, fixtures.win32, { spawn })).toEqual({ status: 'launched', via: 'cmd.exe' });
     expect(calls.map((c) => c.command)).toEqual(['wt.exe', 'cmd.exe']);
     expect(unrefs.at(-1)).toHaveBeenCalledTimes(1);
   });
 
   it('WL-8: a synchronous throw from spawn() counts as a failed step', async () => {
     const { spawn, calls } = fakeSpawn({ throws: new Error('EACCES nope') }, 'ok');
-    expect(await openTerminal({ argv }, fixtures.wsl, { spawn })).toEqual({ status: 'launched', via: 'cmd.exe' });
+    expect(await openTerminal({ argv }, fixtures.win32, { spawn })).toEqual({ status: 'launched', via: 'cmd.exe' });
     expect(calls).toHaveLength(2);
   });
 
   it('WL-8: all steps failing yields unsupported with the failure reasons', async () => {
     const { spawn, calls } = fakeSpawn(new Error('boom-one'), { throws: new Error('boom-two') });
-    const result = await openTerminal({ argv }, fixtures.wsl, { spawn });
+    const result = await openTerminal({ argv }, fixtures.win32, { spawn });
     expect(calls).toHaveLength(2);
-    expect(result).toMatchObject({ status: 'unsupported', fallback: joinPosix(argv) });
+    expect(result).toMatchObject({ status: 'unsupported', fallback: joinCmd(argv) });
     expect(result.status === 'unsupported' && result.reason).toBe('wt.exe: boom-one; cmd.exe: boom-two');
   });
 
   it('spawn options: windowsVerbatimArguments is true only for cmd.exe steps', async () => {
     const { spawn, calls } = fakeSpawn(new Error('x'));
-    await openTerminal({ argv }, fixtures.wsl, { spawn });
+    await openTerminal({ argv }, fixtures.win32, { spawn });
     expect(calls.map((c) => c.command)).toEqual(['wt.exe', 'cmd.exe']);
     for (const c of calls) {
       expect(c.options).toMatchObject({ detached: true, stdio: 'ignore', windowsHide: false });
       expect(c.options.windowsVerbatimArguments === true).toBe(c.command === 'cmd.exe');
     }
+  });
+
+  it('wsl: wt.exe is the only step; its failure (or a missing wt.exe) is unsupported with the pasteable command line, never cmd.exe', async () => {
+    const failing = fakeSpawn(new Error('boom-one'));
+    const result = await openTerminal({ argv }, fixtures.wsl, { spawn: failing.spawn });
+    expect(failing.calls.map((c) => c.command)).toEqual(['wt.exe']);
+    expect(result).toMatchObject({ status: 'unsupported', fallback: joinPosix(argv) });
+    expect(result.status === 'unsupported' && result.reason).toBe('wt.exe: boom-one');
+    const none = fakeSpawn('ok');
+    expect(await openTerminal({ argv }, fixtures['wsl-no-wt'], { spawn: none.spawn })).toMatchObject({ status: 'unsupported', fallback: joinPosix(argv) });
+    expect(none.calls).toHaveLength(0);
   });
 
   it('no plan at all is unsupported with a reason and the quoted command line, never spawning', async () => {

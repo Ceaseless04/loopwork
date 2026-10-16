@@ -1,3 +1,5 @@
+// On WSL, Node is a Linux process, so windowsVerbatimArguments is a no-op and WSL interop re-quotes any argument
+// containing a space or `"` before cmd.exe sees it. The wsl cmd.exe step therefore passes no `"` (no empty title).
 import { caretOnly } from './plan-terminal.js';
 import type { LaunchEnv, LaunchPlan, Platform } from './types.js';
 
@@ -16,9 +18,9 @@ export function planAppWindow(url: string, env: LaunchEnv): LaunchPlan | undefin
     BROWSERS.flatMap((b) => roots.map((r) => `${r}${join}${b.replaceAll('/', join)}`))
       .filter((p) => env.exists(p))
       .map((p) => [p, [app]]);
-  // `start "" <url>`: caret-escape every token, including the literal empty title.
+  // win32: `start "" <url>`, caret-escaping every token including the literal empty title. wsl: no title (see header).
   const cmdStart = (): [string, string[]][] =>
-    has('cmd.exe') ? [['cmd.exe', ['/c', 'start', ...['""', url].map(caretOnly)]]] : [];
+    has('cmd.exe') ? [['cmd.exe', ['/c', 'start', ...(env.platform === 'wsl' ? [] : ['^"^"']), caretOnly(url)]]] : [];
   const open = (cmd: string): [string, string[]][] => (has(cmd) ? [[cmd, [url]]] : []);
 
   const table: Record<Platform, () => [string, string[]][]> = {

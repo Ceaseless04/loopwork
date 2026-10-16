@@ -52,7 +52,7 @@ type LaunchEnv = { platform: Platform; env: Record<string,string|undefined>; exi
 
 | Platform | Terminal | App window |
 |---|---|---|
-| `wsl` | `wt.exe -w new --title T wsl.exe --cd <cwd> --exec <argv...>`; else `cmd.exe /c start wsl.exe ...` (`--exec`, not `--`: `--` hands the rest of the line to the distro's default shell, which would re-parse `argv`; `--exec` skips the shell. To be confirmed on a real WSL host: manual exit-gate checklist). Both steps need `wsl.exe` on `PATH`, and each step needs its own program (`wt.exe`, `cmd.exe`) found by `which` | Chrome/Edge `--app=<url>` via `/mnt/c/Program Files/Google/Chrome/Application/chrome.exe`, then `/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe`, then `msedge.exe` under `Microsoft/Edge/Application/` in the same two roots (every one that exists is a step); else `wslview <url>`; else `cmd.exe /c start "" <url>` |
+| `wsl` | `wt.exe -w new --title T wsl.exe --cd <cwd> --exec <argv...>`; no `cmd.exe` fallback (WSL interop re-quotes arguments, see Quoting) (`--exec`, not `--`: `--` hands the rest of the line to the distro's default shell, which would re-parse `argv`; `--exec` skips the shell. To be confirmed on a real WSL host: manual exit-gate checklist). The step needs `wsl.exe` and `wt.exe` found by `which`; without `wt.exe` the planner returns `undefined` (unsupported, pasteable command line) | Chrome/Edge `--app=<url>` via `/mnt/c/Program Files/Google/Chrome/Application/chrome.exe`, then `/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe`, then `msedge.exe` under `Microsoft/Edge/Application/` in the same two roots (every one that exists is a step); else `wslview <url>`; else `cmd.exe /c start <careted url>` (no empty title: WSL interop would re-quote it) |
 | `darwin` | `osascript` to open Terminal (or iTerm if `TERM_PROGRAM=iTerm.app`) running the command | `open -na "Google Chrome" --args --app=<url>`, else Edge, else `open <url>` |
 | `linux` | `$LOOPWORK_TERMINAL` prefix, else `x-terminal-emulator -e`, `gnome-terminal --`, `kitty`, `konsole -e`, `xterm -e` (requires `DISPLAY` or `WAYLAND_DISPLAY`) | `google-chrome`/`chromium`/`microsoft-edge` with `--app=<url>`, else `xdg-open <url>` |
 | `win32` | `wt.exe -w new --title T [-d <cwd>] cmd.exe /d /s /k <line>`, else `cmd.exe /c start [/D <cwd>] cmd.exe /d /s /k <line>` (no `start` window title is passed) | Chrome/Edge `--app` under `%ProgramFiles%` then `%ProgramFiles(x86)%` (defaults `C:\Program Files`, `C:\Program Files (x86)`), else `cmd.exe /c start "" <url>` |
@@ -80,9 +80,9 @@ A CR or LF cannot ride in one cmd command line and is flattened to a space. Know
 Callers of cmd.exe spell out the layers per case:
 
 - the `win32` `wt.exe` step and the `wsl` `wt.exe` step pass `joinCmd(argv)` / the `wsl.exe` args as ordinary argv, with every `;` in every argument escaped as `\;` (wt.exe treats a bare `;` as a sub-command separator);
-- the `wsl` `cmd.exe /c start wsl.exe ...` step quotes every `wsl.exe` argument with `quoteCmd` (both stages);
+- the `wsl` terminal has no `cmd.exe` step. On WSL, Node is a Linux process, so `windowsVerbatimArguments` is a no-op and WSL interop re-quotes any argument containing a space or `"` before `cmd.exe` sees it, garbling pre-escaped text. The only `wsl` `cmd.exe` step is the app-window last resort, which passes no space or `"`;
 - the `win32` `cmd.exe /c start ...` step is double-parsed: the outer `cmd.exe /c` strips one caret layer, then the started `cmd.exe` reads the line itself (no argv parsing), so the tokens (`/D <cwd>`, `cmd.exe /d /s /k`, and the already-`joinCmd`ed line) get a second, caret-only escape (`caretOnly`) and are not argv-quoted again; a `cwd` containing whitespace is wrapped in `"..."` before the caret layer;
-- `start "" <url>` for app windows: the empty title token and the URL are caret-escaped (`^"^"`).
+- `start "" <url>` for app windows on `win32`: the empty title token and the URL are caret-escaped (`^"^"`). On `wsl` the step is `cmd.exe /c start <careted url>`: the URL is caret-escaped and there is no title token (a title would need a `"`).
 
 ## Execution and fallback strings
 
@@ -129,7 +129,7 @@ then second step succeeds, all fail). Real windows are covered by the manual che
 - **WL-2** With no display on Linux (no `DISPLAY`/`WAYLAND_DISPLAY`), `openTerminal` returns `unsupported` whose `fallback` is the original command line, correctly quoted (with a `cd -- <cwd> && ` prefix when a `cwd` was given).
 - **WL-3** `quote.ts` round-trips a corpus of hostile strings through `sh -c 'printf %s "$1"' _ <quoted>` unchanged (real `sh`, Linux/macOS CI), and the `cmd.exe` quoter has a unit-tested expectation table.
 - **WL-4** `openAppWindow` rejects non-local URLs, URLs with spaces/`"`/`;`/`|`/backticks, and `file:`/`javascript:` schemes.
-- **WL-5** On `wsl`, the Chrome/Edge lookup finds the executable under both `Program Files` and `Program Files (x86)`; with neither it falls back to `wslview`, then `cmd.exe start`.
+- **WL-5** On `wsl`, the Chrome/Edge lookup finds the executable under both `Program Files` and `Program Files (x86)`; with neither it falls back to `wslview`, then `cmd.exe /c start <careted url>`.
 - **WL-6** `keepOpen: true` (default) wraps the command; `false` does not.
 - **WL-7** `LOOPWORK_TERMINAL` overrides discovery and is split on whitespace into argv (no shell).
 - **WL-8** A failed first step falls through to the next; if all fail the result is `unsupported` with the failure reasons in `reason`.
@@ -141,8 +141,9 @@ None blocking. Native Windows (`win32`) is implemented from the table but untest
 Verified only by model / needs a real host (none of this can run in Linux CI; a `windows-latest` job and a real-WSL smoke test are Phase 2; see the manual checklist in `SPEC-exit-gate.md`):
 
 - `quoteCmd` is verified against an independent model of cmd.exe plus CommandLineToArgvW, not a real `cmd.exe`.
-- `wsl.exe --cd <cwd> --exec sh -c <line>` really skips the distro's shell, via `wt.exe` and via `cmd.exe /c start`, and the `keepOpen` banner and inner `"` survive `wt.exe` re-joining its arguments.
-- `wt.exe`'s `\;` escaping behaves as described, and WSL interop does not re-quote `cmd.exe` arguments (the `windowsVerbatimArguments` handling is asserted only as a spawn option on a fake `spawn`).
+- `wsl.exe --cd <cwd> --exec sh -c <line>` really skips the distro's shell via `wt.exe`, and the `keepOpen` banner and inner `"` survive `wt.exe` re-joining its arguments.
+- `wt.exe`'s `\;` escaping behaves as described, and `windowsVerbatimArguments` is asserted only as a spawn option on a fake `spawn`.
+- WSL interop re-quoting of `cmd.exe` arguments (any argument with a space or `"`) was probed on one host only; the `wsl` plans avoid it by design (no `cmd.exe` terminal step, no `"` in the app-window `cmd.exe` step). The native-Windows `cmd.exe` path (`windowsVerbatimArguments` plus the caret layers) still needs a real `cmd.exe` check.
 - The `win32` `cmd.exe /c start cmd.exe /d /s /k <line>` fallback handles arguments with spaces and `& | < > ( )` correctly (the double-parse above).
 - macOS: the `osascript` Terminal and iTerm scripts.
 
