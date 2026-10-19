@@ -167,8 +167,8 @@ export async function executeRun(opts: ExecuteOptions): Promise<RunOutcome> {
           for await (const value of fnOf('source', n.fn)(makeCtx(id, `${id}.out`, input), n.params)) {
             if (ctrl.signal.aborted) return;
             const itemId = `${id}.out#${count++}`;
+            emit({ type: 'ItemEmitted', node: id, itemId, value }); // write-ahead: log leads delivery
             await sendTo(id, { itemId, value });
-            emit({ type: 'ItemEmitted', node: id, itemId, value });
           }
           emit({ type: 'SourceCompleted', node: id, count });
         })().then(() => release(id)),

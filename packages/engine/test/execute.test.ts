@@ -44,10 +44,37 @@ describe('executeRun', () => {
       expect(producer?.seq).toBeLessThan(e.seq);
     }
 
+    // write-ahead: a source item is logged as emitted before any consumer logs its start
+    for (const e of events) {
+      if (e.type !== 'StepStarted' || e.node !== 'm') continue;
+      const emitted = events.find((p) => p.type === 'ItemEmitted' && p.node === 'src' && p.itemId === e.itemId);
+      expect(emitted?.seq).toBeLessThan(e.seq);
+    }
+
     const state = foldRun(events);
     expect(state.status).toBe('succeeded');
     expect(state.edges.size).toBe(2);
     for (const c of state.edges.values()) expect(c).toEqual({ emitted: 20, consumed: 20 });
+  });
+
+  it('write-ahead: ItemEmitted precedes the consumer StepStarted even when the consumer is already waiting', async () => {
+    const registry = createBuiltins();
+    registry.source('slow', async function* () {
+      for (let i = 0; i < 5; i++) {
+        await new Promise<void>((resolve) => setImmediate(resolve)); // let the consumer park on the empty channel
+        yield i;
+      }
+    });
+    const wf = linearFlow({ source: { fn: 'slow' }, maps: [{ id: 'm', fn: 'identity' }], sink: { fn: 'discard' } });
+    const { outcome, events } = await run(wf, { registry });
+
+    expect(outcome).toEqual({ status: 'succeeded' });
+    const started = events.filter((e) => e.type === 'StepStarted' && e.node === 'm');
+    expect(started).toHaveLength(5);
+    for (const e of started) {
+      const emitted = events.find((p) => p.type === 'ItemEmitted' && p.node === 'src' && p.itemId === (e.type === 'StepStarted' ? e.itemId : ''));
+      expect(emitted?.seq).toBeLessThan(e.seq);
+    }
   });
 
   it('map output item ids follow ${inputItemId}>${node}.out#0', async () => {
@@ -113,6 +140,29 @@ describe('executeRun', () => {
     }
   });
 
+  it('ctx exposes idempotencyKey and logs now/random as SideEffect', async () => {
+    const seen: { key: string[]; now: number[]; random: number[] } = { key: [], now: [], random: [] };
+    const registry = createBuiltins();
+    registry.map('probe', async (item, ctx) => {
+      seen.key.push(ctx.idempotencyKey);
+      seen.now.push(ctx.now(), ctx.now());
+      seen.random.push(ctx.random());
+      seen.key.push(ctx.idempotencyKey);
+      return item;
+    });
+    const { outcome, events } = await run(pipelineFlow({ count: 1, mapFn: 'probe' }), { registry });
+
+    expect(outcome).toEqual({ status: 'succeeded' });
+    expect(seen.key).toEqual(['r/m/src.out#0', 'r/m/src.out#0']);
+    const effects = events.flatMap((e) => (e.type === 'SideEffect' ? [e] : []));
+    expect(effects.map((e) => [e.node, e.itemId, e.key])).toEqual([
+      ['m', 'src.out#0', 'now#0'],
+      ['m', 'src.out#0', 'now#1'],
+      ['m', 'src.out#0', 'random#0'],
+    ]);
+    expect(effects.map((e) => e.value)).toEqual([seen.now[0], seen.now[1], seen.random[0]]);
+  });
+
   describe('internal guards', () => {
     it('a frame node fails the run as internal', async () => {
       const wf = flow('f', 'F')
@@ -159,6 +209,22 @@ describe('executeRun', () => {
 
       expect(outcome).toMatchObject({ status: 'failed', reason: 'internal' });
       expect(outcome.status === 'failed' && outcome.message).toMatch(/resume/i);
+    });
+
+    it('a second executeRun on a finished run returns its status and appends nothing', async () => {
+      const { store } = await run(pipelineFlow({ count: 2 }));
+      const before = (await eventsOf(store, 'r')).length;
+      const outcome = await executeRun({
+        runId: 'r',
+        store,
+        registry: createBuiltins(),
+        signal: new AbortController().signal,
+        workerId: WORKER,
+        expectedSeq: before,
+      });
+
+      expect(outcome).toEqual({ status: 'succeeded' });
+      expect(await eventsOf(store, 'r')).toHaveLength(before);
     });
   });
 });
