@@ -49,7 +49,7 @@ the values `EVENT_TYPES`, `MemoryStore`, `PgStore`, `migrate`, `applyEvent`, `em
 Every stored event is `{ runId, seq, ts, type, ...payload }`. `seq` is per run, starts at 1, gapless. `node` is
 always a **scoped node id** (`frame.inner.node`, see `SPEC-graph-model.md`). `itemId` is deterministic:
 source items `${node}.out#${index}`; step outputs `${inputItemId}>${node}.${port}#${k}`. Replaying a step
-therefore reproduces identical ids. A `while`/`until` iteration n's body entry item is `${instanceItemId}>${frame}.iter#${n}` (ids stay constant-length across iterations).
+therefore reproduces identical ids. A `while`/`until` iteration n's body entry item is `${instanceItemId}>${frame}.iter#${n}` (ids stay constant-length across iterations). A `foreach`/`retry` body entry item keeps the instance item id.
 
 ```ts
 type NewEvent =
