@@ -10,7 +10,7 @@ export type RunState = {
   lastSeq: number;
   attempt: number; // highest RunStarted.attempt seen
   failure?: { reason: 'step' | 'budget' | 'crash-loop' | 'internal'; message: string; node?: string | undefined };
-  nodes: Map<string, { started: number; succeeded: number; failed: number; inFlight: Set<string> }>;
+  nodes: Map<string, { started: number; succeeded: number; failed: number; inFlight: Map<string, number> }>; // inFlight: itemId -> attempt of the latest StepStarted
   edges: Map<string, Counter>; // keyed by edge id over the flattened scoped edges
   frames: Map<
     string,
@@ -116,7 +116,7 @@ function emit(lookup: Lookup | undefined, endpoint: string): void {
 
 function nodeOf(state: RunState, id: string) {
   let n = state.nodes.get(id);
-  if (!n) state.nodes.set(id, (n = { started: 0, succeeded: 0, failed: 0, inFlight: new Set() }));
+  if (!n) state.nodes.set(id, (n = { started: 0, succeeded: 0, failed: 0, inFlight: new Map() }));
   return n;
 }
 
@@ -156,7 +156,7 @@ export function applyEvent(state: RunState, e: LoopworkEvent): RunState {
     case 'StepStarted': {
       const n = nodeOf(state, e.node);
       n.started++;
-      n.inFlight.add(e.itemId);
+      n.inFlight.set(e.itemId, e.attempt);
       if (e.attempt === 1) consume(lookup, e.node, e.itemId); // re-runs do not consume again
       break;
     }
@@ -171,7 +171,7 @@ export function applyEvent(state: RunState, e: LoopworkEvent): RunState {
     case 'StepFailed': {
       const n = nodeOf(state, e.node);
       n.failed++;
-      n.inFlight.delete(e.itemId);
+      if (!e.willRetry) n.inFlight.delete(e.itemId); // a retry keeps the item in flight until its next StepStarted
       state.recentErrors.push({ seq: e.seq, node: e.node, itemId: e.itemId, attempt: e.attempt, error: e.error });
       if (state.recentErrors.length > MAX_RECENT_ERRORS) state.recentErrors.shift();
       break;

@@ -225,34 +225,70 @@ describe('foldRun', () => {
       started: 2,
       succeeded: 0,
       failed: 0,
-      inFlight: new Set(['src.out#0', 'src.out#1']),
+      inFlight: new Map([
+        ['src.out#0', 1],
+        ['src.out#1', 1],
+      ]),
     });
     expect(nodeOf(upTo('m0Done'), 'm')).toEqual({
       started: 2,
       succeeded: 1,
       failed: 0,
-      inFlight: new Set(['src.out#1']),
+      inFlight: new Map([['src.out#1', 1]]),
     });
-    // a resumed re-run (attempt 2) counts as another start; inFlight is a set of itemIds
+    // a resumed re-run (attempt 2) counts as another start; inFlight maps itemId -> attempt of the latest StepStarted
     expect(nodeOf(upTo('mRerun'), 'm')).toEqual({
       started: 3,
       succeeded: 1,
       failed: 0,
-      inFlight: new Set(['src.out#1']),
+      inFlight: new Map([['src.out#1', 2]]),
     });
-    // StepFailed removes from inFlight even when willRetry
+    // StepFailed{willRetry:true} keeps the item in inFlight with its last started attempt
     expect(nodeOf(upTo('mFailed'), 'm')).toEqual({
       started: 3,
       succeeded: 1,
       failed: 1,
-      inFlight: new Set(),
+      inFlight: new Map([['src.out#1', 2]]),
     });
-    expect(nodeOf(upTo('mDone'), 'm')).toEqual({ started: 4, succeeded: 2, failed: 1, inFlight: new Set() });
+    expect(nodeOf(upTo('mDone'), 'm')).toEqual({ started: 4, succeeded: 2, failed: 1, inFlight: new Map() });
     // body nodes use their scoped ids
-    expect(nodeOf(upTo('bodyAStarted'), 'loop.b1').inFlight).toEqual(new Set([A]));
-    expect(nodeOf(foldRun(log), 'loop.b2')).toEqual({ started: 2, succeeded: 2, failed: 0, inFlight: new Set() });
-    expect(nodeOf(upTo('sinkStarted'), 'snk').inFlight).toEqual(new Set([A2, B2]));
-    expect(nodeOf(foldRun(log), 'snk')).toEqual({ started: 2, succeeded: 2, failed: 0, inFlight: new Set() });
+    expect(nodeOf(upTo('bodyAStarted'), 'loop.b1').inFlight).toEqual(new Map([[A, 1]]));
+    expect(nodeOf(foldRun(log), 'loop.b2')).toEqual({ started: 2, succeeded: 2, failed: 0, inFlight: new Map() });
+    expect(nodeOf(upTo('sinkStarted'), 'snk').inFlight).toEqual(
+      new Map([
+        [A2, 1],
+        [B2, 1],
+      ]),
+    );
+    expect(nodeOf(foldRun(log), 'snk')).toEqual({ started: 2, succeeded: 2, failed: 0, inFlight: new Map() });
+  });
+
+  it('EL-7: inFlight keeps an item across StepFailed{willRetry:true}, the retry updates its attempt, and a terminal failure removes it', () => {
+    const head = [created(), runStarted(1), stepStarted('m', 'src.out#0')];
+    const inFlight = (...es: NewEvent[]) => nodeOf(foldRun(toLog([...head, ...es])), 'm').inFlight;
+    expect(inFlight(stepFailed('m', 'src.out#0', 1, 'flaky', true))).toEqual(new Map([['src.out#0', 1]]));
+    expect(inFlight(stepFailed('m', 'src.out#0', 1, 'flaky', true), stepStarted('m', 'src.out#0', 3))).toEqual(
+      new Map([['src.out#0', 3]]), // attempt 2 never logged (crash-interrupted): stored value is the event's attempt, not a start count
+    );
+    expect(
+      inFlight(stepFailed('m', 'src.out#0', 1, 'flaky', true), stepStarted('m', 'src.out#0', 2), stepOk('m', 'src.out#0')),
+    ).toEqual(new Map());
+    expect(inFlight(stepFailed('m', 'src.out#0', 1, 'fatal', false))).toEqual(new Map());
+  });
+
+  it('EL-7: a retry StepStarted (attempt 2) updates inFlight but does not increment the edge consumed counter', () => {
+    const s = foldRun(
+      toLog([
+        created(),
+        runStarted(1),
+        { type: 'ItemEmitted', node: 'src', itemId: 'src.out#0', value: 0 },
+        stepStarted('m', 'src.out#0'),
+        stepFailed('m', 'src.out#0', 1, 'flaky', true),
+        stepStarted('m', 'src.out#0', 2),
+      ]),
+    );
+    expect(nodeOf(s, 'm').inFlight).toEqual(new Map([['src.out#0', 2]]));
+    expect(edgeOf(s, E_SRC_M)).toEqual({ emitted: 1, consumed: 1 });
   });
 
   it('EL-7: per-edge emitted/consumed over the flattened scoped edges (itemId-producer derivation)', () => {
