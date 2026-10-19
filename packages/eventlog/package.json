@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "files": ["dist", "migrations"],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -16,10 +17,10 @@
     "test:pg": "vitest run --root ../.. --project pg --passWithNoTests packages/eventlog/"
   },
   "dependencies": {
+    "@loopwork/graph": "workspace:*",
     "pg": "^8.23.1"
   },
   "devDependencies": {
-    "@loopwork/graph": "workspace:*",
     "@types/pg": "^8.23.1"
   }
 }

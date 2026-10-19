@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "id": "nested-frames",
+  "name": "Foreach over batches, refining each with a while loop of retried steps",
+  "nodes": {
+    "batches": {
+      "kind": "source",
+      "fn": "batches.list",
+      "params": { "size": 10 },
+      "out": { "type": "object", "properties": { "n": { "type": "integer" } }, "required": ["n"] }
+    },
+    "outer": {
+      "kind": "frame",
+      "frame": "foreach",
+      "concurrency": 4,
+      "budgets": { "maxIterations": 1000, "maxDurationMs": 3600000 },
+      "in": { "type": "object", "properties": { "n": { "type": "integer" } }, "required": ["n"] },
+      "out": { "type": "object", "properties": { "n": { "type": "integer" } }, "required": ["n"] },
+      "body": {
+        "nodes": {
+          "refine": {
+            "kind": "frame",
+            "frame": "while",
+            "condition": "state.n < 100",
+            "budgets": { "maxIterations": 50, "maxDurationMs": 600000 },
+            "in": { "type": "object", "properties": { "n": { "type": "integer" } }, "required": ["n"] },
+            "out": { "type": "object", "properties": { "n": { "type": "integer" } }, "required": ["n"] },
+            "body": {
+              "nodes": {
+                "attempt": {
+                  "kind": "frame",
+                  "frame": "retry",
+                  "maxAttempts": 3,
+                  "backoff": { "kind": "fixed", "baseMs": 500 },
+                  "onExhausted": "fail-run",
+                  "budgets": { "maxIterations": 10, "maxDurationMs": 60000 },
+                  "in": { "type": "object", "properties": { "n": { "type": "integer" } }, "required": ["n"] },
+                  "out": { "type": "object", "properties": { "n": { "type": "integer" } }, "required": ["n"] },
+                  "body": {
+                    "nodes": {
+                      "step": {
+                        "kind": "map",
+                        "fn": "batch.step",
+                        "params": { "grow": 10 },
+                        "in": { "type": "object", "properties": { "n": { "type": "integer" } }, "required": ["n"] },
+                        "out": { "type": "object", "properties": { "n": { "type": "integer" } }, "required": ["n"] }
+                      }
+                    },
+                    "edges": [],
+                    "entry": { "node": "step", "port": "in" },
+                    "exit": { "node": "step", "port": "out" }
+                  }
+                }
+              },
+              "edges": [],
+              "entry": { "node": "attempt", "port": "in" },
+              "exit": { "node": "attempt", "port": "out" }
+            }
+          }
+        },
+        "edges": [],
+        "entry": { "node": "refine", "port": "in" },
+        "exit": { "node": "refine", "port": "out" }
+      }
+    },
+    "publish": {
+      "kind": "sink",
+      "fn": "batch.publish",
+      "in": { "type": "object", "properties": { "n": { "type": "integer" } }, "required": ["n"] }
+    }
+  },
+  "edges": [
+    { "from": { "node": "batches", "port": "out" }, "to": { "node": "outer", "port": "in" } },
+    { "from": { "node": "outer", "port": "out" }, "to": { "node": "publish", "port": "in" } }
+  ]
+}

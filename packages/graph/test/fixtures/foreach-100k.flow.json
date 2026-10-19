@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "id": "foreach-100k",
+  "name": "Fan out over 100k generated items",
+  "nodes": {
+    "generate": {
+      "kind": "source",
+      "fn": "range",
+      "params": { "count": 100000, "seed": 42 },
+      "out": { "type": "integer" }
+    },
+    "each": {
+      "kind": "frame",
+      "frame": "foreach",
+      "concurrency": 64,
+      "budgets": { "maxIterations": 100000, "maxDurationMs": 600000, "maxCostUsd": 5, "maxTokens": 2000000 },
+      "in": { "type": "integer" },
+      "out": { "type": "number" },
+      "body": {
+        "nodes": {
+          "double": { "kind": "map", "fn": "math.scale", "params": { "factor": 2 }, "in": { "type": "integer" }, "out": { "type": "integer" } },
+          "halve": { "kind": "map", "fn": "math.scale", "params": { "factor": 0.5 }, "in": { "type": "integer" }, "out": { "type": "number" } }
+        },
+        "edges": [{ "from": { "node": "double", "port": "out" }, "to": { "node": "halve", "port": "in" } }],
+        "entry": { "node": "double", "port": "in" },
+        "exit": { "node": "halve", "port": "out" }
+      }
+    },
+    "collect": {
+      "kind": "sink",
+      "fn": "stats.collect",
+      "concurrency": 1,
+      "in": { "type": "number" }
+    }
+  },
+  "edges": [
+    { "from": { "node": "generate", "port": "out" }, "to": { "node": "each", "port": "in" } },
+    { "from": { "node": "each", "port": "out" }, "to": { "node": "collect", "port": "in" } }
+  ]
+}
