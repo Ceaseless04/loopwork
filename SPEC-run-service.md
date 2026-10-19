@@ -89,12 +89,15 @@ type RunView = {
   failure?: { reason: string; message: string; node?: string };
   nodes: Record<string, { kind: string; state: 'idle'|'running'|'done'|'failed'; started: number; succeeded: number; failed: number; inFlight: number }>;
   edges: Record<string, { emitted: number; consumed: number }>;           // keyed by edgeId
-  frames: Record<string, { frame: string; iterationsStarted: number; iterationsEnded: number; active: number; exited: boolean;
-                           budgets: { iterations: { used: number; limit: number }; time: { usedMs: number; limitMs: number } } }>;
+  frames: Record<string, { frame: string; iterationsStarted: number; iterationsEnded: number; active: number; exitedCount: number;
+                           budgets: { iterations: { used: number; limit: number }; time: { usedMs: number; limitMs: number; breached: boolean } } }>;
   recentErrors: { seq: number; node: string; itemId: string; message: string; willRetry: boolean }[];   // ≤ 50
   flow: Flow;                                                             // for rendering
 };
 ```
+`toRunView` derives the counts from the `foldRun` state (`SPEC-event-log.md`): `nodes[].inFlight` = the node's `inFlight.size`;
+per frame, `active` = `active.size` (live instances), `exitedCount` = finished instances (a frame has one instance per `foreach` item, so there is no
+single `exited` flag), `time.usedMs` = the sum of `elapsedMs` over the live instances, and `time.breached` = any live instance is `breached`.
 `stalled` = log says `running` but the job's lease has expired (worker dead). It is a view-level status, never an event.
 
 ### Errors

@@ -44,6 +44,34 @@ const flow: Flow = {
   ],
 };
 
+const whileFlow: Flow = {
+  version: 1,
+  id: 'w',
+  name: 'w',
+  nodes: {
+    src: { kind: 'source', fn: 'range', out: {} },
+    W: {
+      kind: 'frame',
+      frame: 'while',
+      budgets: { maxIterations: 10, maxDurationMs: 1000 },
+      condition: 'lessThan',
+      in: {},
+      out: {},
+      body: {
+        nodes: { x: { kind: 'map', fn: 'increment', in: {}, out: {} } },
+        edges: [],
+        entry: { node: 'x', port: 'in' },
+        exit: { node: 'x', port: 'out' },
+      },
+    },
+    snk: { kind: 'sink', fn: 'discard', in: {} },
+  },
+  edges: [
+    { from: { node: 'src', port: 'out' }, to: { node: 'W', port: 'in' } },
+    { from: { node: 'W', port: 'out' }, to: { node: 'snk', port: 'in' } },
+  ],
+};
+
 const toLog = (news: NewEvent[]): LoopworkEvent[] =>
   news.map((e, i) => ({ ...e, runId: 'r1', seq: i + 1, ts: '2026-01-01T00:00:00.000Z' }));
 
@@ -225,34 +253,70 @@ describe('foldRun', () => {
       started: 2,
       succeeded: 0,
       failed: 0,
-      inFlight: new Set(['src.out#0', 'src.out#1']),
+      inFlight: new Map([
+        ['src.out#0', 1],
+        ['src.out#1', 1],
+      ]),
     });
     expect(nodeOf(upTo('m0Done'), 'm')).toEqual({
       started: 2,
       succeeded: 1,
       failed: 0,
-      inFlight: new Set(['src.out#1']),
+      inFlight: new Map([['src.out#1', 1]]),
     });
-    // a resumed re-run (attempt 2) counts as another start; inFlight is a set of itemIds
+    // a resumed re-run (attempt 2) counts as another start; inFlight maps itemId -> attempt of the latest StepStarted
     expect(nodeOf(upTo('mRerun'), 'm')).toEqual({
       started: 3,
       succeeded: 1,
       failed: 0,
-      inFlight: new Set(['src.out#1']),
+      inFlight: new Map([['src.out#1', 2]]),
     });
-    // StepFailed removes from inFlight even when willRetry
+    // StepFailed{willRetry:true} keeps the item in inFlight with its last started attempt
     expect(nodeOf(upTo('mFailed'), 'm')).toEqual({
       started: 3,
       succeeded: 1,
       failed: 1,
-      inFlight: new Set(),
+      inFlight: new Map([['src.out#1', 2]]),
     });
-    expect(nodeOf(upTo('mDone'), 'm')).toEqual({ started: 4, succeeded: 2, failed: 1, inFlight: new Set() });
+    expect(nodeOf(upTo('mDone'), 'm')).toEqual({ started: 4, succeeded: 2, failed: 1, inFlight: new Map() });
     // body nodes use their scoped ids
-    expect(nodeOf(upTo('bodyAStarted'), 'loop.b1').inFlight).toEqual(new Set([A]));
-    expect(nodeOf(foldRun(log), 'loop.b2')).toEqual({ started: 2, succeeded: 2, failed: 0, inFlight: new Set() });
-    expect(nodeOf(upTo('sinkStarted'), 'snk').inFlight).toEqual(new Set([A2, B2]));
-    expect(nodeOf(foldRun(log), 'snk')).toEqual({ started: 2, succeeded: 2, failed: 0, inFlight: new Set() });
+    expect(nodeOf(upTo('bodyAStarted'), 'loop.b1').inFlight).toEqual(new Map([[A, 1]]));
+    expect(nodeOf(foldRun(log), 'loop.b2')).toEqual({ started: 2, succeeded: 2, failed: 0, inFlight: new Map() });
+    expect(nodeOf(upTo('sinkStarted'), 'snk').inFlight).toEqual(
+      new Map([
+        [A2, 1],
+        [B2, 1],
+      ]),
+    );
+    expect(nodeOf(foldRun(log), 'snk')).toEqual({ started: 2, succeeded: 2, failed: 0, inFlight: new Map() });
+  });
+
+  it('EL-7: inFlight keeps an item across StepFailed{willRetry:true}, the retry updates its attempt, and a terminal failure removes it', () => {
+    const head = [created(), runStarted(1), stepStarted('m', 'src.out#0')];
+    const inFlight = (...es: NewEvent[]) => nodeOf(foldRun(toLog([...head, ...es])), 'm').inFlight;
+    expect(inFlight(stepFailed('m', 'src.out#0', 1, 'flaky', true))).toEqual(new Map([['src.out#0', 1]]));
+    expect(inFlight(stepFailed('m', 'src.out#0', 1, 'flaky', true), stepStarted('m', 'src.out#0', 3))).toEqual(
+      new Map([['src.out#0', 3]]), // attempt 2 never logged (crash-interrupted): stored value is the event's attempt, not a start count
+    );
+    expect(
+      inFlight(stepFailed('m', 'src.out#0', 1, 'flaky', true), stepStarted('m', 'src.out#0', 2), stepOk('m', 'src.out#0')),
+    ).toEqual(new Map());
+    expect(inFlight(stepFailed('m', 'src.out#0', 1, 'fatal', false))).toEqual(new Map());
+  });
+
+  it('EL-7: a retry StepStarted (attempt 2) updates inFlight but does not increment the edge consumed counter', () => {
+    const s = foldRun(
+      toLog([
+        created(),
+        runStarted(1),
+        { type: 'ItemEmitted', node: 'src', itemId: 'src.out#0', value: 0 },
+        stepStarted('m', 'src.out#0'),
+        stepFailed('m', 'src.out#0', 1, 'flaky', true),
+        stepStarted('m', 'src.out#0', 2),
+      ]),
+    );
+    expect(nodeOf(s, 'm').inFlight).toEqual(new Map([['src.out#0', 2]]));
+    expect(edgeOf(s, E_SRC_M)).toEqual({ emitted: 1, consumed: 1 });
   });
 
   it('EL-7: per-edge emitted/consumed over the flattened scoped edges (itemId-producer derivation)', () => {
@@ -381,34 +445,7 @@ describe('foldRun', () => {
     expect(edgeOf(s, 'F.out->snk.in')).toEqual({ emitted: 1, consumed: 1 });
   });
 
-  it('EL-7: while/until count emitted on the frame out edges only at FrameExited{condition}, not per iteration', () => {
-    const whileFlow: Flow = {
-      version: 1,
-      id: 'w',
-      name: 'w',
-      nodes: {
-        src: { kind: 'source', fn: 'range', out: {} },
-        W: {
-          kind: 'frame',
-          frame: 'while',
-          budgets: { maxIterations: 10, maxDurationMs: 1000 },
-          condition: 'lessThan',
-          in: {},
-          out: {},
-          body: {
-            nodes: { x: { kind: 'map', fn: 'increment', in: {}, out: {} } },
-            edges: [],
-            entry: { node: 'x', port: 'in' },
-            exit: { node: 'x', port: 'out' },
-          },
-        },
-        snk: { kind: 'sink', fn: 'discard', in: {} },
-      },
-      edges: [
-        { from: { node: 'src', port: 'out' }, to: { node: 'W', port: 'in' } },
-        { from: { node: 'W', port: 'out' }, to: { node: 'snk', port: 'in' } },
-      ],
-    };
+  it('EL-7: while/until count emitted on the frame out edges from FrameExited.outputs, not per iteration or by reason', () => {
     const first = 'src.out#0';
     const states = [first, `${first}>W.x.out#0`, `${first}>W.x.out#0>W.x.out#0`, `${first}>W.x.out#0>W.x.out#0>W.x.out#0`];
     const body: NewEvent[] = [];
@@ -421,7 +458,14 @@ describe('foldRun', () => {
         { type: 'IterationEnded', node: 'W', itemId: first, iteration: i, elapsedMs: 1 },
       );
     }
-    const finalState = must(states[3], 'state');
+    const finalState = `${first}>W.out#0`;
+    const condExit: NewEvent = {
+      type: 'FrameExited',
+      node: 'W',
+      itemId: first,
+      reason: 'condition',
+      outputs: [{ port: 'out', itemId: finalState, value: 1 }],
+    };
     const head: NewEvent[] = [
       created(whileFlow),
       runStarted(1),
@@ -431,18 +475,93 @@ describe('foldRun', () => {
     const edge = 'W.out->snk.in';
     expect(edgeOf(foldRun(toLog(head)), edge)).toEqual({ emitted: 0, consumed: 0 });
     const exited = foldRun(
-      toLog([...head, { type: 'FrameExited', node: 'W', itemId: first, reason: 'condition' }]),
+      toLog([...head, condExit]),
     );
     expect(edgeOf(exited, edge)).toEqual({ emitted: 1, consumed: 0 });
     const consumed = foldRun(
       toLog([
         ...head,
-        { type: 'FrameExited', node: 'W', itemId: first, reason: 'condition' },
+        condExit,
         stepStarted('snk', finalState),
       ]),
     );
     expect(edgeOf(consumed, edge)).toEqual({ emitted: 1, consumed: 1 });
     expect(edgeOf(consumed, 'src.out->W.in')).toEqual({ emitted: 0, consumed: 1 });
+  });
+
+  it('EL-7: a zero-iteration while still counts its emitted final state from FrameExited.outputs', () => {
+    const item = 'src.out#0';
+    const final = `${item}>W.out#0`;
+    const s = foldRun(
+      toLog([
+        created(whileFlow),
+        runStarted(1),
+        { type: 'FrameEntered', node: 'W', itemId: item, frame: 'while' },
+        { type: 'FrameExited', node: 'W', itemId: item, reason: 'condition', outputs: [{ port: 'out', itemId: final, value: 1 }] },
+        stepStarted('snk', final),
+      ]),
+    );
+    expect(edgeOf(s, 'W.out->snk.in')).toEqual({ emitted: 1, consumed: 1 });
+  });
+
+  it('EL-7: FrameExited{condition} without outputs emits nothing', () => {
+    const item = 'src.out#0';
+    const s = foldRun(
+      toLog([
+        created(whileFlow),
+        runStarted(1),
+        { type: 'FrameEntered', node: 'W', itemId: item, frame: 'while' },
+        { type: 'FrameExited', node: 'W', itemId: item, reason: 'condition' },
+      ]),
+    );
+    expect(edgeOf(s, 'W.out->snk.in')).toEqual({ emitted: 0, consumed: 0 });
+  });
+
+  it('EL-7: retry emit-error counts the error port edge from FrameExited.outputs', () => {
+    const retryFlow: Flow = {
+      version: 1,
+      id: 'r',
+      name: 'r',
+      nodes: {
+        src: { kind: 'source', fn: 'range', out: {} },
+        R: {
+          kind: 'frame',
+          frame: 'retry',
+          budgets: { maxIterations: 10, maxDurationMs: 1000 },
+          maxAttempts: 2,
+          backoff: { kind: 'fixed', baseMs: 1 },
+          onExhausted: 'emit-error',
+          in: {},
+          out: {},
+          body: {
+            nodes: { x: { kind: 'map', fn: 'identity', in: {}, out: {} } },
+            edges: [],
+            entry: { node: 'x', port: 'in' },
+            exit: { node: 'x', port: 'out' },
+          },
+        },
+        dlq: { kind: 'sink', fn: 'discard', in: {} },
+      },
+      edges: [
+        { from: { node: 'src', port: 'out' }, to: { node: 'R', port: 'in' } },
+        { from: { node: 'R', port: 'error' }, to: { node: 'dlq', port: 'in' } },
+        { from: { node: 'R', port: 'out' }, to: { node: 'dlq', port: 'in' } },
+      ],
+    };
+    const item = 'src.out#0';
+    const err = `${item}>R.error#0`;
+    const s = foldRun(
+      toLog([
+        created(retryFlow),
+        runStarted(1),
+        { type: 'FrameEntered', node: 'R', itemId: item, frame: 'retry' },
+        { type: 'FrameExited', node: 'R', itemId: item, reason: 'retries-exhausted', outputs: [{ port: 'error', itemId: err, value: 'boom' }, { port: 'out', itemId: `${item}>R.out#0`, value: 1 }] },
+        stepStarted('dlq', err),
+      ]),
+    );
+    expect(edgeOf(s, 'R.error->dlq.in')).toEqual({ emitted: 1, consumed: 1 });
+    // the `out` output on the retries-exhausted event is synthetic: it proves every output is counted, not only outputs[0]
+    expect(edgeOf(s, 'R.out->dlq.in').emitted).toBe(1); // every output is emitted, not just outputs[0]
   });
 
   it('EL-7: a structuredClone\'d state keeps counting edges', () => {
@@ -465,19 +584,81 @@ describe('foldRun', () => {
   });
 
   it('EL-7: per-frame iterations, active set, elapsedMs and exited', () => {
+    const fresh = { iteration: 0, elapsedMs: 0, breached: false };
     let f = frameOf(upTo('entered'), 'loop');
-    expect(f).toEqual({ iterationsStarted: 0, iterationsEnded: 0, active: new Set([A, B]), elapsedMs: 0, exited: false });
+    expect(f).toEqual({
+      iterationsStarted: 0,
+      iterationsEnded: 0,
+      exitedCount: 0,
+      active: new Map([[A, fresh], [B, fresh]]),
+    });
     f = frameOf(upTo('bodyAStarted'), 'loop');
-    expect(f).toMatchObject({ iterationsStarted: 1, iterationsEnded: 0, active: new Set([A, B]), exited: false });
+    expect(f).toMatchObject({ iterationsStarted: 1, iterationsEnded: 0, exitedCount: 0 });
+    expect(f.active.get(A)).toEqual({ iteration: 1, elapsedMs: 0, breached: false });
+    expect(f.active.get(B)).toEqual(fresh);
     f = frameOf(upTo('exitedA'), 'loop');
-    expect(f).toMatchObject({ iterationsStarted: 1, iterationsEnded: 1, active: new Set([B]), elapsedMs: 40 });
+    expect(f).toMatchObject({ iterationsStarted: 1, iterationsEnded: 1, exitedCount: 1 });
+    expect([...f.active.keys()]).toEqual([B]);
     expect(frameOf(foldRun(log), 'loop')).toEqual({
       iterationsStarted: 2,
       iterationsEnded: 2,
-      active: new Set(),
-      elapsedMs: 65,
-      exited: true,
+      exitedCount: 2,
+      active: new Map(),
     });
+  });
+
+  it('EL-7: IterationEnded accumulates elapsedMs per instance, leaving other instances untouched', () => {
+    const f = frameOf(
+      foldRun(
+        toLog([
+          created(),
+          { type: 'FrameEntered', node: 'loop', itemId: A, frame: 'foreach' },
+          { type: 'FrameEntered', node: 'loop', itemId: B, frame: 'foreach' },
+          { type: 'IterationStarted', node: 'loop', itemId: A, iteration: 5 },
+          { type: 'IterationEnded', node: 'loop', itemId: A, iteration: 5, elapsedMs: 40 },
+          { type: 'IterationStarted', node: 'loop', itemId: A, iteration: 7 },
+          { type: 'IterationEnded', node: 'loop', itemId: A, iteration: 7, elapsedMs: 15 },
+        ]),
+      ),
+      'loop',
+    );
+    expect(f).toMatchObject({ iterationsStarted: 2, iterationsEnded: 2 });
+    expect(f.active.get(A)).toEqual({ iteration: 7, elapsedMs: 55, breached: false });
+    expect(f.active.get(B)).toEqual({ iteration: 0, elapsedMs: 0, breached: false });
+  });
+
+  it('EL-7: BudgetExceeded marks only its own frame instance breached', () => {
+    const f = frameOf(
+      foldRun(
+        toLog([
+          created(),
+          { type: 'FrameEntered', node: 'loop', itemId: A, frame: 'while' },
+          { type: 'FrameEntered', node: 'loop', itemId: B, frame: 'while' },
+          { type: 'BudgetExceeded', node: 'loop', itemId: A, budget: 'iterations', limit: 3, used: 4 },
+        ]),
+      ),
+      'loop',
+    );
+    expect(f.active.get(A)?.breached).toBe(true);
+    expect(f.active.get(B)?.breached).toBe(false);
+  });
+
+  it('EL-7: FrameExited deletes the instance and counts it; events for an unknown instance create nothing', () => {
+    const f = frameOf(
+      foldRun(
+        toLog([
+          created(),
+          { type: 'FrameEntered', node: 'loop', itemId: A, frame: 'foreach' },
+          { type: 'IterationStarted', node: 'loop', itemId: B, iteration: 1 },
+          { type: 'IterationEnded', node: 'loop', itemId: B, iteration: 1, elapsedMs: 9 },
+          { type: 'BudgetExceeded', node: 'loop', itemId: B, budget: 'time', limit: 1, used: 9 },
+          { type: 'FrameExited', node: 'loop', itemId: A, reason: 'input-done', outputs: [] },
+        ]),
+      ),
+      'loop',
+    );
+    expect(f.active.size).toBe(0);
+    expect(f).toMatchObject({ iterationsStarted: 1, iterationsEnded: 1, exitedCount: 1 });
   });
 
   it('EL-7: committed holds `${node}\\u0000${itemId}` for each StepSucceeded only', () => {

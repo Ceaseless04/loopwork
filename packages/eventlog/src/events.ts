@@ -32,6 +32,7 @@ export type NewEvent =
       node: string;
       itemId: string;
       reason: 'input-done' | 'condition' | 'success' | 'retries-exhausted';
+      outputs?: { port: string; itemId: string; value: JsonValue }[];
     }
   | { type: 'BudgetExceeded'; node: string; itemId: string; budget: 'iterations' | 'time'; limit: number; used: number };
 
