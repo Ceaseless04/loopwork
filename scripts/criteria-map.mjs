@@ -14,15 +14,14 @@ export const EXPECTED_IDS = [...range('SC', 7), ...range('GM', 9), ...range('WL'
 
 const counts = (file) => /(\.test\.ts|(^|[\\/])store-contract\.ts)$/.test(file) && !/criteria-map\.test\.ts$/.test(file);
 
+const NAMED_ID = /(?<![\w.])(?:it|test)\(\s*['"`]([A-Z]+-\d+):/g;
+
 /** id -> paths of the counting files that name it. */
 export function mapCriteria({ ids, files }) {
-  const counting = [...files].filter(([file]) => counts(file));
-  return new Map(
-    ids.map((id) => {
-      const named = new RegExp(`(?<![\\w.])(?:it|test)\\(\\s*['"\`]${id}:`);
-      return [id, counting.filter(([, text]) => named.test(text)).map(([file]) => file)];
-    }),
-  );
+  const named = [...files]
+    .filter(([file]) => counts(file))
+    .map(([file, text]) => [file, new Set([...text.matchAll(NAMED_ID)].map((m) => m[1]))]);
+  return new Map(ids.map((id) => [id, named.filter(([, found]) => found.has(id)).map(([file]) => file)]));
 }
 
 export function findUnmappedCriteria(opts) {
