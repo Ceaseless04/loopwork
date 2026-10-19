@@ -1,10 +1,12 @@
 import { applyEvent, emptyRunState } from '@loopwork/eventlog';
-import type { EventStore, NewEvent, RunState } from '@loopwork/eventlog';
-import type { Flow, JsonValue } from '@loopwork/graph';
-import { createChannel, type Channel } from './channel.js';
+import type { EventStore, NewEvent } from '@loopwork/eventlog';
+import type { JsonValue } from '@loopwork/graph';
+import type { Channel } from './channel.js';
+import { unrunnable } from './guards.js';
 import { createRecorder } from './recorder.js';
-import type { NodeKind, NodeRegistry, StepContext } from './registry.js';
-import { createLimiter, runPool } from './scheduler.js';
+import type { Item, NodeRegistry } from './registry.js';
+import { createLimiter } from './scheduler.js';
+import { createRunScope } from './scope.js';
 
 export type ExecuteOptions = {
   runId: string;
@@ -25,23 +27,6 @@ export type RunOutcome =
   | { status: 'failed'; reason: 'step' | 'budget' | 'internal'; message: string; node?: string }
   | { status: 'cancelled' }
   | { status: 'fenced' };
-
-type Item = { itemId: string; value: JsonValue };
-
-/** Why this log/flow cannot run in this slice (plain flows, fresh logs only), or undefined. */
-function unrunnable(flow: Flow | undefined, state: RunState, registry: NodeRegistry): string | undefined {
-  if (!flow) return 'run has no flow';
-  for (const [id, n] of Object.entries(flow.nodes)) {
-    if (n.kind === 'frame') return `node "${id}" is a frame; frames land in engine-core slices 3-4`;
-    if (!registry.has(n.kind, n.fn)) return `node "${id}": unknown ${n.kind} fn "${n.fn}"`;
-  }
-  const edgeWork = [...state.edges.values()].some((c) => c.emitted > 0);
-  const inFlight = [...state.nodes.values()].some((n) => n.inFlight.size > 0);
-  if (state.committed.size > 0 || state.sourcesCompleted.size > 0 || edgeWork || inFlight) {
-    return 'log already holds work; resume lands in engine-core slice 5';
-  }
-  return undefined;
-}
 
 function terminalEvent(o: RunOutcome): NewEvent | undefined {
   switch (o.status) {
@@ -67,14 +52,14 @@ export async function executeRun(opts: ExecuteOptions): Promise<RunOutcome> {
   if (state.status === 'succeeded' || state.status === 'cancelled') return { status: state.status };
 
   const ctrl = new AbortController();
-  const channels = new Map<string, Channel<Item>>();
+  const channels = new Set<Channel<Item>>();
   let decided: RunOutcome | undefined;
   /** First outcome wins; aborts workers and closes every channel so blocked ones wake. */
   const stop = (outcome: RunOutcome): void => {
     if (decided) return;
     decided = outcome;
     ctrl.abort();
-    for (const c of channels.values()) c.close(); // belt-and-braces: blocked sends/recvs are also woken by the abort signal
+    for (const c of channels) c.close(); // belt-and-braces: blocked sends/recvs are also woken by the abort signal
   };
   const rec = createRecorder({
     store,
@@ -105,135 +90,18 @@ export async function executeRun(opts: ExecuteOptions): Promise<RunOutcome> {
   const problem = unrunnable(flow, state, registry);
   if (problem !== undefined || !flow) return finish({ status: 'failed', reason: 'internal', message: problem ?? 'run has no flow' });
 
-  // Wiring keyed by port (`node.port`): one channel per consumer input port; `targets` = input ports fed by an output port; `refs` = producers still feeding a channel.
-  const capacity = opts.channelCapacity ?? 64;
-  const targets = new Map<string, string[]>();
-  const refs = new Map<string, number>();
-  for (const e of flow.edges) {
-    const from = `${e.from.node}.${e.from.port}`;
-    const to = `${e.to.node}.${e.to.port}`;
-    targets.set(from, [...(targets.get(from) ?? []), to]);
-    refs.set(to, (refs.get(to) ?? 0) + 1);
-  }
-  for (const [id, n] of Object.entries(flow.nodes)) if (n.kind !== 'source') channels.set(`${id}.in`, createChannel<Item>(capacity));
-  for (const [key, c] of channels) if (!refs.has(key)) c.close();
-  const release = (producer: string): void => {
-    for (const t of targets.get(producer) ?? []) {
-      const left = (refs.get(t) ?? 1) - 1;
-      refs.set(t, left);
-      if (left === 0) channels.get(t)?.close();
-    }
-  };
-  /** A send into a channel closed by stop() is expected, not an error. */
-  const sendTo = async (producer: string, item: Item): Promise<void> => {
-    for (const t of targets.get(producer) ?? []) {
-      try {
-        await channels.get(t)?.send(item, ctrl.signal);
-      } catch (e) {
-        if (!ctrl.signal.aborted) throw e;
-        return;
-      }
-    }
-  };
-
-  const fnOf = <K extends NodeKind>(kind: K, name: string) => {
-    const fn = registry.get(kind, name);
-    if (!fn) throw new Error(`${kind} "${name}" is not registered`);
-    return fn;
-  };
-  const makeCtx = (node: string, itemId: string, runInput?: JsonValue): StepContext => {
-    let nows = 0;
-    let randoms = 0;
-    const logged = (key: string, value: number): number => {
-      emit({ type: 'SideEffect', node, itemId, key, value });
-      return value;
-    };
-    return {
-      runId,
-      node,
-      itemId,
-      attempt: 1,
-      signal: ctrl.signal,
-      idempotencyKey: `${runId}/${node}/${itemId}`,
-      input: runInput,
-      now: () => logged(`now#${nows++}`, Date.now()),
-      random: () => logged(`random#${randoms++}`, Math.random()),
-    };
-  };
-
-  const limiter = createLimiter(opts.maxInFlight ?? 64);
-  const work: Promise<void>[] = [];
-  for (const [id, n] of Object.entries(flow.nodes)) {
-    if (n.kind === 'source') {
-      work.push(
-        (async () => {
-          let count = 0;
-          try {
-            for await (const value of fnOf('source', n.fn)(makeCtx(id, `${id}.out`, input), n.params)) {
-              await rec.ready(); // recorder backpressure: don't run ahead of the store
-              if (ctrl.signal.aborted) return;
-              const itemId = `${id}.out#${count++}`;
-              emit({ type: 'ItemEmitted', node: id, itemId, value }); // write-ahead: log leads delivery
-              await sendTo(`${id}.out`, { itemId, value });
-            }
-          } catch (err) {
-            if (ctrl.signal.aborted) return;
-            stop({ status: 'failed', reason: 'step', node: id, message: err instanceof Error ? err.message : String(err) });
-            return;
-          }
-          emit({ type: 'SourceCompleted', node: id, count });
-        })().then(() => release(`${id}.out`)),
-      );
-    } else if (n.kind === 'map' || n.kind === 'sink') {
-      const input$ = channels.get(`${id}.in`);
-      if (!input$) continue;
-      work.push(
-        runPool({
-          input: input$,
-          concurrency: n.concurrency ?? 1,
-          limiter,
-          signal: ctrl.signal,
-          handle: async ({ itemId, value }) => {
-            emit({ type: 'StepStarted', node: id, itemId, attempt: 1 });
-            const ctx = makeCtx(id, itemId);
-            try {
-              if (n.kind === 'sink') {
-                await fnOf('sink', n.fn)(value, ctx, n.params);
-                return async () => {
-                  await rec.flush(); // D4: nothing is reported done before the sink's side effects are durable
-                  emit({ type: 'StepSucceeded', node: id, itemId, outputs: [] });
-                };
-              }
-              const result = await fnOf('map', n.fn)(value, ctx, n.params);
-              return async () => {
-                const values = Array.isArray(result) ? result : [result];
-                const outputs = values.map((v, k) => ({ port: 'out', itemId: `${itemId}>${id}.out#${k}`, value: v }));
-                await rec.ready(); // never holds the permit: continuations run after release
-                if (ctrl.signal.aborted) return;
-                emit({ type: 'StepSucceeded', node: id, itemId, outputs });
-                for (const o of outputs) {
-                  if (ctrl.signal.aborted) return;
-                  await sendTo(`${id}.out`, { itemId: o.itemId, value: o.value });
-                }
-              };
-            } catch (err) {
-              // Stop here, not via the pool's rejection, so siblings' signals abort at once; emit drops after stop.
-              const error = err instanceof Error ? err : new Error(String(err));
-              emit({
-                type: 'StepFailed',
-                node: id,
-                itemId,
-                attempt: ctx.attempt,
-                error: { name: error.name, message: error.message, ...(error.stack !== undefined && { stack: error.stack }) },
-                willRetry: false,
-              });
-              stop({ status: 'failed', reason: 'step', node: id, message: error.message });
-            }
-          },
-        }).then(() => release(`${id}.out`)),
-      );
-    }
-  }
+  const { work } = createRunScope({
+    runId,
+    input,
+    registry,
+    signal: ctrl.signal,
+    rec,
+    emit,
+    fail: (reason, message, node) => stop({ status: 'failed', reason, message, ...(node !== undefined && { node }) }),
+    limiter: createLimiter(opts.maxInFlight ?? 64),
+    capacity: opts.channelCapacity ?? 64,
+    channels,
+  })({ nodes: flow.nodes, edges: flow.edges, prefix: '' });
 
   const onAbort = (): void => stop({ status: 'cancelled' });
   if (opts.signal.aborted) onAbort();

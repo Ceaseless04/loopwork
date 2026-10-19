@@ -1,5 +1,7 @@
 import type { JsonValue } from '@loopwork/graph';
 
+export type Item = { itemId: string; value: JsonValue };
+
 export type NodeKind = 'source' | 'map' | 'sink' | 'predicate';
 
 export type StepContext = {

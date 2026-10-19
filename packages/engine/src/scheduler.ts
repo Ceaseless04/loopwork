@@ -32,6 +32,23 @@ export function createLimiter(max: number): Limiter {
   };
 }
 
+/** Acquire a permit, run `handle(item)`, always release; resolves undefined without running if `signal` aborted after the acquire. */
+export async function runHeld<T, R>(
+  limiter: Limiter,
+  handle: (item: T) => Promise<R>,
+  item: T,
+  signal?: AbortSignal,
+): Promise<R | undefined> {
+  // `acquire` is not abortable: handlers honour the signal, and a parked worker is woken when a holder releases.
+  await limiter.acquire();
+  try {
+    if (signal?.aborted) return undefined;
+    return await handle(item);
+  } finally {
+    limiter.release();
+  }
+}
+
 /**
  * Runs `concurrency` worker loops over `input`. Resolves once the input is closed and drained (or `signal`
  * aborts) and all running handlers returned. `handle` runs holding a limiter permit; it may return a
@@ -66,15 +83,7 @@ export async function runPool<T>(o: {
         throw e;
       }
       if (r.done) return;
-      // `acquire` is not abortable: handlers honour the signal, and a parked worker is woken when a holder releases.
-      await limiter.acquire();
-      let next: void | (() => Promise<void>);
-      try {
-        if (stop.signal.aborted) return;
-        next = await handle(r.value);
-      } finally {
-        limiter.release();
-      }
+      const next = await runHeld(limiter, handle, r.value, stop.signal);
       if (next) await next();
     }
   };
