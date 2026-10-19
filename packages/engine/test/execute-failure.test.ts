@@ -94,8 +94,10 @@ describe('executeRun failure and cancellation', () => {
     expect(events.find((e) => e.type === 'StepFailed')).toMatchObject({ node: 'fe', itemId: 'src.out#2>a.out#0', willRetry: false });
     expect(events.at(-1)?.type).toBe('RunFailed');
 
-    await tick(60); // let aborted siblings settle
+    // runPool waits for the aborted siblings to settle before executeRun returns
     expect(settled).toContain(true);
+    expect(await eventsOf(store, 'r')).toHaveLength(events.length);
+    for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r));
     expect(await eventsOf(store, 'r')).toHaveLength(events.length);
   });
 
@@ -117,6 +119,23 @@ describe('executeRun failure and cancellation', () => {
     expect(siblingSignals).toEqual([true]);
     expect(events.at(-1)?.type).toBe('RunFailed');
     expect(events.some((e) => e.type === 'StepSucceeded' && e.node === 'm')).toBe(false); // the released sibling's late result is dropped
+  });
+
+  it('execute: a failing source fails the run with reason step and the source node id, nothing is logged after RunFailed', async () => {
+    const registry = createBuiltins();
+    registry.source('flaky', async function* () {
+      yield 0;
+      yield 1;
+      throw new Error('source down');
+    });
+    const wf = linearFlow({ source: { fn: 'flaky' }, maps: [{ id: 'm', fn: 'identity' }], sink: { fn: 'discard' } });
+    const { outcome, events } = await run(wf, registry);
+
+    expect(outcome).toEqual({ status: 'failed', reason: 'step', node: 'src', message: 'source down' });
+    expect(events.at(-1)).toMatchObject({ type: 'RunFailed', reason: 'step', node: 'src', message: 'source down' });
+    expect(events.filter((e) => e.type === 'RunFailed')).toHaveLength(1);
+    expect(events.some((e) => e.type === 'SourceCompleted')).toBe(false);
+    expect(foldRun(events).status).toBe('failed');
   });
 
   it('execute: a failing store append stops the run promptly instead of draining the input', async () => {
@@ -176,7 +195,8 @@ describe('executeRun failure and cancellation', () => {
     expect(stepSignals.every(Boolean)).toBe(true);
     expect(foldRun(events).status).toBe('cancelled');
 
-    await tick(30);
+    expect(await eventsOf(store, 'r')).toHaveLength(events.length);
+    for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r));
     expect(await eventsOf(store, 'r')).toHaveLength(events.length);
   });
 });

@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -8,9 +9,10 @@ const PKG_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST = path.resolve(PKG_DIR, 'dist/index.js');
 
 // Black-box child: loads the built package by a runtime-built URL (no static import of dist anywhere), runs
-// range -> identity -> discard over a discarding store and prints one JSON line. cwd = the engine package, so the
+// range -> identity -> discard over a discarding store and writes one JSON result to the file named by argv[3]. cwd = the engine package, so the
 // bare @loopwork/* imports resolve through its node_modules workspace links.
 const CHILD = `
+import { writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { SeqConflictError } from '@loopwork/eventlog';
 import { flow } from '@loopwork/graph';
@@ -41,20 +43,20 @@ const store = {
   },
 };
 const outcome = await executeRun({ runId: 'r', store, registry: createBuiltins(), signal: new AbortController().signal, workerId: 'w1', expectedSeq: 1 });
-process.stdout.write(JSON.stringify({ outcome, appended, maxHeapUsedMb }) + '\\n');
+writeFileSync(process.argv[3], JSON.stringify({ outcome, appended, maxHeapUsedMb }));
 `;
 
 type Report = { outcome: { status: string }; appended: number; maxHeapUsedMb: number };
 
-function runChild(count: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function runChild(count: number, resultFile: string): Promise<{ code: number | null; stderr: string }> {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
-      ['--max-old-space-size=256', '--input-type=module', '--eval', CHILD, DIST, String(count)],
+      ['--max-old-space-size=256', '--input-type=module', '--eval', CHILD, DIST, String(count), resultFile],
       { cwd: PKG_DIR, maxBuffer: 1 << 20 },
-      (err, stdout, stderr) => {
+      (err, _stdout, stderr) => {
         const code = err === null ? 0 : typeof err.code === 'number' ? err.code : null; // null: killed by a signal / spawn failure
-        resolve({ code, stdout, stderr });
+        resolve({ code, stderr });
       },
     );
   });
@@ -65,10 +67,16 @@ describe('executeRun memory', () => {
     // the child imports the built engine; never skip silently when it is missing
     if (!existsSync(DIST)) throw new Error('packages/engine/dist is missing: run `pnpm build` first');
 
-    const { code, stdout, stderr } = await runChild(100_000);
-    expect(code, `child exited with ${String(code)}; stderr:\n${stderr}`).toBe(0);
-
-    const r = JSON.parse(stdout.trim().split('\n').at(-1) ?? '') as Report;
+    const dir = mkdtempSync(path.join(tmpdir(), 'loopwork-heap-'));
+    let r: Report;
+    try {
+      const resultFile = path.join(dir, 'result.json');
+      const { code, stderr } = await runChild(100_000, resultFile);
+      expect(code, `child exited with ${String(code)}; stderr:\n${stderr}`).toBe(0);
+      r = JSON.parse(readFileSync(resultFile, 'utf8')) as Report;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
     expect(r.outcome).toEqual({ status: 'succeeded' });
     expect(r.appended).toBe(5 * 100_000 + 3); // RunStarted + 100k x (ItemEmitted, m start+ok, snk start+ok) + SourceCompleted + RunSucceeded
     expect(r.maxHeapUsedMb).toBeLessThan(128); // O(channels + in-flight): measured ~17 MB, independent of N

@@ -74,7 +74,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<RunOutcome> {
     if (decided) return;
     decided = outcome;
     ctrl.abort();
-    for (const c of channels.values()) c.close();
+    for (const c of channels.values()) c.close(); // belt-and-braces: blocked sends/recvs are also woken by the abort signal
   };
   const rec = createRecorder({
     store,
@@ -105,16 +105,18 @@ export async function executeRun(opts: ExecuteOptions): Promise<RunOutcome> {
   const problem = unrunnable(flow, state, registry);
   if (problem !== undefined || !flow) return finish({ status: 'failed', reason: 'internal', message: problem ?? 'run has no flow' });
 
-  // Wiring: one channel per consumer node; `targets` = consumers fed by a producer; `refs` = producers still feeding a channel.
+  // Wiring keyed by port (`node.port`): one channel per consumer input port; `targets` = input ports fed by an output port; `refs` = producers still feeding a channel.
   const capacity = opts.channelCapacity ?? 64;
   const targets = new Map<string, string[]>();
   const refs = new Map<string, number>();
   for (const e of flow.edges) {
-    targets.set(e.from.node, [...(targets.get(e.from.node) ?? []), e.to.node]);
-    refs.set(e.to.node, (refs.get(e.to.node) ?? 0) + 1);
+    const from = `${e.from.node}.${e.from.port}`;
+    const to = `${e.to.node}.${e.to.port}`;
+    targets.set(from, [...(targets.get(from) ?? []), to]);
+    refs.set(to, (refs.get(to) ?? 0) + 1);
   }
-  for (const [id, n] of Object.entries(flow.nodes)) if (n.kind !== 'source') channels.set(id, createChannel<Item>(capacity));
-  for (const [id, c] of channels) if (!refs.has(id)) c.close();
+  for (const [id, n] of Object.entries(flow.nodes)) if (n.kind !== 'source') channels.set(`${id}.in`, createChannel<Item>(capacity));
+  for (const [key, c] of channels) if (!refs.has(key)) c.close();
   const release = (producer: string): void => {
     for (const t of targets.get(producer) ?? []) {
       const left = (refs.get(t) ?? 1) - 1;
@@ -166,17 +168,24 @@ export async function executeRun(opts: ExecuteOptions): Promise<RunOutcome> {
       work.push(
         (async () => {
           let count = 0;
-          for await (const value of fnOf('source', n.fn)(makeCtx(id, `${id}.out`, input), n.params)) {
+          try {
+            for await (const value of fnOf('source', n.fn)(makeCtx(id, `${id}.out`, input), n.params)) {
+              await rec.ready(); // recorder backpressure: don't run ahead of the store
+              if (ctrl.signal.aborted) return;
+              const itemId = `${id}.out#${count++}`;
+              emit({ type: 'ItemEmitted', node: id, itemId, value }); // write-ahead: log leads delivery
+              await sendTo(`${id}.out`, { itemId, value });
+            }
+          } catch (err) {
             if (ctrl.signal.aborted) return;
-            const itemId = `${id}.out#${count++}`;
-            emit({ type: 'ItemEmitted', node: id, itemId, value }); // write-ahead: log leads delivery
-            await sendTo(id, { itemId, value });
+            stop({ status: 'failed', reason: 'step', node: id, message: err instanceof Error ? err.message : String(err) });
+            return;
           }
           emit({ type: 'SourceCompleted', node: id, count });
-        })().then(() => release(id)),
+        })().then(() => release(`${id}.out`)),
       );
     } else if (n.kind === 'map' || n.kind === 'sink') {
-      const input$ = channels.get(id);
+      const input$ = channels.get(`${id}.in`);
       if (!input$) continue;
       work.push(
         runPool({
@@ -199,10 +208,12 @@ export async function executeRun(opts: ExecuteOptions): Promise<RunOutcome> {
               return async () => {
                 const values = Array.isArray(result) ? result : [result];
                 const outputs = values.map((v, k) => ({ port: 'out', itemId: `${itemId}>${id}.out#${k}`, value: v }));
+                await rec.ready(); // never holds the permit: continuations run after release
+                if (ctrl.signal.aborted) return;
                 emit({ type: 'StepSucceeded', node: id, itemId, outputs });
                 for (const o of outputs) {
                   if (ctrl.signal.aborted) return;
-                  await sendTo(id, { itemId: o.itemId, value: o.value });
+                  await sendTo(`${id}.out`, { itemId: o.itemId, value: o.value });
                 }
               };
             } catch (err) {
@@ -219,7 +230,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<RunOutcome> {
               stop({ status: 'failed', reason: 'step', node: id, message: error.message });
             }
           },
-        }).then(() => release(id)),
+        }).then(() => release(`${id}.out`)),
       );
     }
   }
