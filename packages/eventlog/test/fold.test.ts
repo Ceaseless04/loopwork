@@ -465,19 +465,81 @@ describe('foldRun', () => {
   });
 
   it('EL-7: per-frame iterations, active set, elapsedMs and exited', () => {
+    const fresh = { iteration: 0, elapsedMs: 0, breached: false };
     let f = frameOf(upTo('entered'), 'loop');
-    expect(f).toEqual({ iterationsStarted: 0, iterationsEnded: 0, active: new Set([A, B]), elapsedMs: 0, exited: false });
+    expect(f).toEqual({
+      iterationsStarted: 0,
+      iterationsEnded: 0,
+      exitedCount: 0,
+      active: new Map([[A, fresh], [B, fresh]]),
+    });
     f = frameOf(upTo('bodyAStarted'), 'loop');
-    expect(f).toMatchObject({ iterationsStarted: 1, iterationsEnded: 0, active: new Set([A, B]), exited: false });
+    expect(f).toMatchObject({ iterationsStarted: 1, iterationsEnded: 0, exitedCount: 0 });
+    expect(f.active.get(A)).toEqual({ iteration: 1, elapsedMs: 0, breached: false });
+    expect(f.active.get(B)).toEqual(fresh);
     f = frameOf(upTo('exitedA'), 'loop');
-    expect(f).toMatchObject({ iterationsStarted: 1, iterationsEnded: 1, active: new Set([B]), elapsedMs: 40 });
+    expect(f).toMatchObject({ iterationsStarted: 1, iterationsEnded: 1, exitedCount: 1 });
+    expect([...f.active.keys()]).toEqual([B]);
     expect(frameOf(foldRun(log), 'loop')).toEqual({
       iterationsStarted: 2,
       iterationsEnded: 2,
-      active: new Set(),
-      elapsedMs: 65,
-      exited: true,
+      exitedCount: 2,
+      active: new Map(),
     });
+  });
+
+  it('EL-7: IterationEnded accumulates elapsedMs per instance, leaving other instances untouched', () => {
+    const f = frameOf(
+      foldRun(
+        toLog([
+          created(),
+          { type: 'FrameEntered', node: 'loop', itemId: A, frame: 'foreach' },
+          { type: 'FrameEntered', node: 'loop', itemId: B, frame: 'foreach' },
+          { type: 'IterationStarted', node: 'loop', itemId: A, iteration: 5 },
+          { type: 'IterationEnded', node: 'loop', itemId: A, iteration: 5, elapsedMs: 40 },
+          { type: 'IterationStarted', node: 'loop', itemId: A, iteration: 7 },
+          { type: 'IterationEnded', node: 'loop', itemId: A, iteration: 7, elapsedMs: 15 },
+        ]),
+      ),
+      'loop',
+    );
+    expect(f).toMatchObject({ iterationsStarted: 2, iterationsEnded: 2 });
+    expect(f.active.get(A)).toEqual({ iteration: 7, elapsedMs: 55, breached: false });
+    expect(f.active.get(B)).toEqual({ iteration: 0, elapsedMs: 0, breached: false });
+  });
+
+  it('EL-7: BudgetExceeded marks only its own frame instance breached', () => {
+    const f = frameOf(
+      foldRun(
+        toLog([
+          created(),
+          { type: 'FrameEntered', node: 'loop', itemId: A, frame: 'while' },
+          { type: 'FrameEntered', node: 'loop', itemId: B, frame: 'while' },
+          { type: 'BudgetExceeded', node: 'loop', itemId: A, budget: 'iterations', limit: 3, used: 4 },
+        ]),
+      ),
+      'loop',
+    );
+    expect(f.active.get(A)?.breached).toBe(true);
+    expect(f.active.get(B)?.breached).toBe(false);
+  });
+
+  it('EL-7: FrameExited deletes the instance and counts it; events for an unknown instance create nothing', () => {
+    const f = frameOf(
+      foldRun(
+        toLog([
+          created(),
+          { type: 'FrameEntered', node: 'loop', itemId: A, frame: 'foreach' },
+          { type: 'IterationStarted', node: 'loop', itemId: B, iteration: 1 },
+          { type: 'IterationEnded', node: 'loop', itemId: B, iteration: 1, elapsedMs: 9 },
+          { type: 'BudgetExceeded', node: 'loop', itemId: B, budget: 'time', limit: 1, used: 9 },
+          { type: 'FrameExited', node: 'loop', itemId: A, reason: 'input-done', outputs: [] },
+        ]),
+      ),
+      'loop',
+    );
+    expect(f.active.size).toBe(0);
+    expect(f).toMatchObject({ iterationsStarted: 1, iterationsEnded: 1, exitedCount: 1 });
   });
 
   it('EL-7: committed holds `${node}\\u0000${itemId}` for each StepSucceeded only', () => {

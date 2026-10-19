@@ -14,7 +14,12 @@ export type RunState = {
   edges: Map<string, Counter>; // keyed by edge id over the flattened scoped edges
   frames: Map<
     string,
-    { iterationsStarted: number; iterationsEnded: number; active: Set<string>; elapsedMs: number; exited: boolean }
+    {
+      iterationsStarted: number;
+      iterationsEnded: number;
+      exitedCount: number;
+      active: Map<string, { iteration: number; elapsedMs: number; breached: boolean }>; // keyed by frame-instance itemId
+    }
   >;
   sourcesCompleted: Set<string>;
   committed: Set<string>; // `${node}\u0000${itemId}` per StepSucceeded
@@ -118,7 +123,7 @@ function nodeOf(state: RunState, id: string) {
 function frameOf(state: RunState, id: string) {
   let f = state.frames.get(id);
   if (!f) {
-    state.frames.set(id, (f = { iterationsStarted: 0, iterationsEnded: 0, active: new Set(), elapsedMs: 0, exited: false }));
+    state.frames.set(id, (f = { iterationsStarted: 0, iterationsEnded: 0, exitedCount: 0, active: new Map() }));
   }
   return f;
 }
@@ -175,22 +180,32 @@ export function applyEvent(state: RunState, e: LoopworkEvent): RunState {
       state.sideEffects.set(sideEffectKey(e.node, e.itemId, e.key), e.value);
       break;
     case 'FrameEntered':
-      frameOf(state, e.node).active.add(e.itemId);
+      frameOf(state, e.node).active.set(e.itemId, { iteration: 0, elapsedMs: 0, breached: false });
       consume(lookup, e.node, e.itemId);
       break;
-    case 'IterationStarted':
-      frameOf(state, e.node).iterationsStarted++;
+    case 'IterationStarted': {
+      const f = frameOf(state, e.node);
+      f.iterationsStarted++;
+      const inst = f.active.get(e.itemId);
+      if (inst) inst.iteration = e.iteration;
       break;
+    }
     case 'IterationEnded': {
       const f = frameOf(state, e.node);
       f.iterationsEnded++;
-      f.elapsedMs += e.elapsedMs;
+      const inst = f.active.get(e.itemId);
+      if (inst) inst.elapsedMs += e.elapsedMs;
+      break;
+    }
+    case 'BudgetExceeded': {
+      const inst = frameOf(state, e.node).active.get(e.itemId);
+      if (inst) inst.breached = true;
       break;
     }
     case 'FrameExited': {
       const f = frameOf(state, e.node);
       f.active.delete(e.itemId);
-      f.exited = true;
+      f.exitedCount++;
       if (e.reason === 'condition') emit(lookup, `${e.node}.out`); // while/until emit only their final state
       break;
     }
