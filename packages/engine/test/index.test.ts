@@ -7,4 +7,13 @@ describe('@loopwork/engine package scaffold', () => {
     expect(pkg.name).toBe('@loopwork/engine');
     expect(typeof (await import('../src/index.js'))).toBe('object');
   });
+
+  it('exports the public engine API', async () => {
+    const api = await import('../src/index.js');
+    const keys = Object.keys(api);
+    expect(keys).toEqual(expect.arrayContaining(['createBuiltins', 'createRegistry', 'executeRun']));
+    for (const internal of ['createChannel', 'createRecorder', 'createLimiter', 'runPool']) {
+      expect(keys).not.toContain(internal);
+    }
+  });
 });
