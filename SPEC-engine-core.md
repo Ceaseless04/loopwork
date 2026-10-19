@@ -30,9 +30,9 @@ packages/engine/
   src/builtins.ts       createBuiltins(): NodeRegistry
   src/channel.ts        bounded async channel (backpressure)
   src/scheduler.ts      per-node worker pool, global in-flight cap
-  src/frames/{foreach,while,retry}.ts
+  src/frames/{foreach,while,retry}.ts   (slice 3-5)
   src/recorder.ts       batching event writer (flush by count/time)
-  src/resume.ts         derives work to redo from RunState
+  src/resume.ts         derives work to redo from RunState   (slice 3-5)
   test/
 ```
 
@@ -45,6 +45,7 @@ type NodeRegistry = {
   sink(name: string, fn: SinkFn): void;           // (item, ctx, params) => Promise<void>
   predicate(name: string, fn: PredicateFn): void; // (state, ctx, params) => Promise<boolean>   for while/until conditions
   has(kind, name): boolean;  names(kind): string[];
+  get<K extends NodeKind>(kind: K, name: string): FnByKind[K] | undefined;   // FnByKind: source→SourceFn, map→MapFn, sink→SinkFn, predicate→PredicateFn
 };
 type StepContext = {
   runId: string; node: string; itemId: string; attempt: number; signal: AbortSignal;
@@ -83,6 +84,7 @@ Needed by tests, the exit gate, the GUI's demo flows and `loopwork init`'s sampl
 slow sink stalls the source instead of buffering unboundedly. Every `map`/`sink` node runs up to `concurrency`
 steps at once (default 1), and all nodes together never exceed `maxInFlight`. Output order is **completion
 order**, not input order; lineage is carried in `itemId`. Engine memory is O(channels + in-flight), independent of item count (the store and the resume fold are excluded).
+A step's `fn` holds the global `maxInFlight` permit; outbound sends (which may block on a full channel) and the sink flush run after the permit is released. Source and map outputs are write-ahead: logged (`ItemEmitted` / `StepSucceeded{outputs}`) first, then delivered downstream.
 
 **Steps.** `StepStarted` → call `fn` → `StepSucceeded{outputs}` or `StepFailed`. A step is *committed* only when its
 `StepSucceeded` is flushed to the store. Anything not in the log is treated as not done.
