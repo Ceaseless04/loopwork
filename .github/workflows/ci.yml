@@ -72,6 +72,8 @@ jobs:
         with:
           node-version: 22
       - run: corepack enable && pnpm install --frozen-lockfile
+      # Workspace packages resolve each other (and the engine black-box child test) through dist/, which only a build writes.
+      - run: pnpm build
       - name: Unit tests with the changed-line coverage gate
         run: |
           set -euo pipefail
