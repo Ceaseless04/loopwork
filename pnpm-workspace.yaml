@@ -6,3 +6,9 @@ packages:
 # pnpm 12 hoists nothing by default; @types/node arrives transitively via @types/pg/vitest and is required for types:["node"].
 publicHoistPattern:
   - "@types/node"
+# Reject exotic (git/tarball URL) transitive dependencies.
+blockExoticSubdeps: true
+# Only install releases at least 7 days old (minutes), a window to catch compromised publishes.
+minimumReleaseAge: 10080
+# Fail if a package's provenance/trust evidence is weaker than an earlier release.
+trustPolicy: no-downgrade
