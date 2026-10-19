@@ -148,7 +148,7 @@ calling `executeRun` again on the same store. `*.pg.test.ts`: one smoke test per
 ## Success Criteria
 
 - **EC-1** A `source → map → sink` flow processes N items; `StepSucceeded` count equals N for each node; run `succeeded`.
-- **EC-2** Backpressure: with a sink slower than the source, the source's emitted-minus-consumed gap never exceeds `channelCapacity + concurrency`; a 100k-item run against a discarding test store completes with `--max-old-space-size=256`.
+- **EC-2** Backpressure: with a sink slower than the source, the source's emitted-minus-consumed gap never exceeds `channelCapacity + concurrency + 1` (the +1 is the write-ahead item the source has logged and parked on a full channel); a 100k-item run against a discarding test store completes with `--max-old-space-size=256`.
 - **EC-3** Concurrency: a node with `concurrency: k` never has more than `k` steps in flight, and reaches `k` when work is available; `maxInFlight` caps the total across nodes.
 - **EC-4** `foreach` runs one iteration per input item with the configured body concurrency, and `FrameEntered`/`FrameExited{input-done}` are emitted once per input item.
 - **EC-5** `while`/`until` iterate to the condition and emit the final state; `until` always runs the body at least once, `while` may run it zero times.

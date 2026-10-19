@@ -28,7 +28,7 @@ Slice 2 of the stacked engine-core PRs (docs/PLAN.md phase 1, build order: engin
 
 ## Acceptance criteria
 - EC-1 `source -> map -> sink` flow over N items: `StepSucceeded` count equals N per node; run `succeeded`.
-- EC-2 Backpressure: with a sink slower than the source, the source's emitted-minus-consumed gap never exceeds `channelCapacity + concurrency`; a 100k-item run against a DISCARDING test store (test helper, not MemoryStore) completes under `--max-old-space-size=256` (keep this test in the `*.timed.test.ts` last-run group or otherwise within the 90 s `check:task` budget; if 100k is too slow for check:task use a smaller N in the unit test and keep 100k for `bench:stream`, which lands in slice 6 — state which you chose).
+- EC-2 Backpressure: with a sink slower than the source, the source's emitted-minus-consumed gap never exceeds `channelCapacity + concurrency + 1` (the +1 is the write-ahead item the source has logged and parked on a full channel); a 100k-item run against a DISCARDING test store (test helper, not MemoryStore) completes under `--max-old-space-size=256` (keep this test in the `*.timed.test.ts` last-run group or otherwise within the 90 s `check:task` budget; if 100k is too slow for check:task use a smaller N in the unit test and keep 100k for `bench:stream`, which lands in slice 6 — state which you chose).
 - EC-3 Concurrency: a node with `concurrency: k` never has more than k steps in flight and reaches k when work is available; `maxInFlight` caps the total.
 - EC-9 A failing plain step fails the run with `reason:'step'` and the node id; its `StepFailed` is in the log.
 - EC-14 A second executor appending with a stale `expectedSeq` makes the first return `fenced` and stop issuing steps.
