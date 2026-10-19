@@ -4,7 +4,7 @@ import type { EventStore, NewEvent } from '@loopwork/eventlog';
 export interface Recorder {
   /** Buffers; appends when `maxEvents` is reached or `maxMs` after the first buffered event. Ignored once closed or fenced. */
   push(e: NewEvent): void;
-  /** Resolves once everything pushed before the call is appended (or dropped because fenced); rejects with a non-conflict store error. */
+  /** Resolves once everything pushed before the call is appended (or dropped because fenced); rejects with the first non-conflict store error, every time. */
   flush(): Promise<void>;
   /** Flushes, then ignores later pushes. */
   close(): Promise<void>;
@@ -25,17 +25,21 @@ export function createRecorder(o: {
   let buffer: NewEvent[] = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
   let tail: Promise<void> = Promise.resolve(); // appends run strictly one after another
-  let late: { error: unknown } | undefined; // failure of a push/timer-triggered write, surfaced by the next flush()
+  let failed: { error: unknown } | undefined; // first non-conflict store error: sticky, so the log never gets holes
   let closed = false;
   let fenced = false;
   let lastSeq = o.expectedSeq;
 
   const write = async (batch: NewEvent[]): Promise<void> => {
+    if (failed) throw failed.error;
     if (fenced || batch.length === 0) return;
     try {
       lastSeq = (await o.store.append(o.runId, batch, { expectedSeq: lastSeq })).lastSeq;
     } catch (error) {
-      if (!(error instanceof SeqConflictError)) throw error;
+      if (!(error instanceof SeqConflictError)) {
+        failed = { error };
+        throw error;
+      }
       fenced = true;
       buffer = [];
       clearTimeout(timer);
@@ -56,32 +60,23 @@ export function createRecorder(o: {
   };
 
   const background = (): void => {
-    enqueue().catch((error: unknown) => {
-      late = { error };
-    });
-  };
-
-  const flush = async (): Promise<void> => {
-    await enqueue();
-    if (late) {
-      const { error } = late;
-      late = undefined;
-      throw error;
-    }
+    enqueue().catch(() => undefined); // already stored in `failed`; surfaced by flush()/close()
   };
 
   return {
     push(e) {
-      if (closed || fenced) return;
+      if (closed || fenced || failed) return;
       buffer.push(e);
       if (buffer.length >= o.maxEvents) return background();
-      timer ??= setTimeout(background, o.maxMs);
-      timer.unref();
+      if (!timer) {
+        timer = setTimeout(background, o.maxMs);
+        timer.unref();
+      }
     },
-    flush,
+    flush: enqueue,
     async close() {
       closed = true;
-      await flush();
+      await enqueue();
     },
     get fenced() {
       return fenced;

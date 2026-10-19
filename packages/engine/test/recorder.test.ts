@@ -120,6 +120,23 @@ describe('recorder', () => {
     expect(auto.onFenced).not.toHaveBeenCalled();
   });
 
+  it('recorder: the first non-conflict store error is sticky: nothing more is appended, flush()/close() keep rejecting', async () => {
+    const { store, rec, onFenced, read } = await setup({ maxEvents: 1 });
+    const append = vi.spyOn(store, 'append').mockRejectedValueOnce(new Error('db down'));
+
+    rec.push(ev(1)); // its write fails
+    rec.push(ev(2));
+    rec.push(ev(3));
+    await expect(rec.flush()).rejects.toThrow('db down');
+    await expect(rec.flush()).rejects.toThrow('db down');
+    await expect(rec.close()).rejects.toThrow('db down');
+
+    expect(append).toHaveBeenCalledTimes(1);
+    expect((await read()).map((e) => e.seq)).toEqual([1]);
+    expect(rec.fenced).toBe(false);
+    expect(onFenced).not.toHaveBeenCalled();
+  });
+
   it('recorder: close() flushes, then ignores later pushes', async () => {
     const { rec, read } = await setup();
 
