@@ -30,7 +30,7 @@ packages/engine/
   src/builtins.ts       createBuiltins(): NodeRegistry
   src/channel.ts        bounded async channel (backpressure)
   src/scheduler.ts      per-node worker pool, global in-flight cap
-  src/frames/{foreach,while,retry}.ts   (slice 3-5)
+  src/frames.ts   frame-instance runners: foreach, retry (slice 3), while/until (slice 4)
   src/recorder.ts       batching event writer (flush by count/time)
   src/resume.ts         derives work to redo from RunState   (slice 3-5)
   test/
@@ -83,7 +83,7 @@ Needed by tests, the exit gate, the GUI's demo flows and `loopwork init`'s sampl
 **Streaming.** Each edge is a bounded channel. A producer awaits when the channel is full (backpressure), so a
 slow sink stalls the source instead of buffering unboundedly. Every `map`/`sink` node runs up to `concurrency`
 steps at once (default 1), and all nodes together never exceed `maxInFlight`. Output order is **completion
-order**, not input order; lineage is carried in `itemId`. Engine memory is O(channels + in-flight), independent of item count (the store and the resume fold are excluded).
+order**, not input order; lineage is carried in `itemId`. A body node's `concurrency` is shared across all instances of its frame. Engine memory is O(channels + in-flight), independent of item count (the store and the resume fold are excluded).
 A step's `fn` holds the global `maxInFlight` permit; outbound sends (which may block on a full channel) and the sink flush run after the permit is released. Source and map outputs are write-ahead: logged (`ItemEmitted` / `StepSucceeded{outputs}`) first, then delivered downstream.
 
 **Steps.** `StepStarted` → call `fn` → `StepSucceeded{outputs}` or `StepFailed`. A step is *committed* only when its
@@ -99,10 +99,10 @@ while it is true, `until` runs the body until it is true (condition checked **af
 **Retry.** Run `body` on the item; on step failure retry up to `maxAttempts` total with `backoff`
 (`fixed`: `baseMs`; `exponential`: `baseMs * 2^(attempt-1)`, capped at 60 s). Success exits `success`. A retry re-runs the failed step with `attempt + 1`; committed body steps are not re-run. `attempt` counts executions, including ones interrupted by a crash, and `maxAttempts` bounds it. On
 exhaustion exit `retries-exhausted`: `fail-run` ends the run `failed{reason:'step'}`; `emit-error` logs `FrameExited{retries-exhausted, outputs:[{port:'error', itemId:`${in}>${frame}.error#0`, value:{ message, item }}]}` and continues. Plain (non-frame) steps never retry: a failing
-step fails the run unless it is inside a `retry` frame.
+step fails the run unless it is inside a `retry` frame. `maxAttempts` bounds each body step `(node, itemId)`; a retry instance runs exactly one iteration (`IterationStarted`/`IterationEnded` 1). In `emit-error` the `item` in the error value is the frame's `in` value, the other body branches complete, and outputs already sent on `out` stand. Instances of a `retry`/`while`/`until` frame run one at a time (wrap the frame in a `foreach` for parallelism); the backoff wait holds no limiter permit.
 
 **Budgets.** `maxIterations` is counted per frame **instance** (per `in` item). `maxDurationMs` is the frame instance's
-wall time, accumulated from logged `IterationEnded.elapsedMs` so it survives resume, and enforced by a live timer (logged elapsed plus the current iteration's elapsed time) so a hung iteration still breaches. On breach: append
+wall time, accumulated from logged `IterationEnded.elapsedMs` so it survives resume, and enforced by a live timer (logged elapsed plus the current iteration's elapsed time) so a hung iteration still breaches. Instance wall time includes retry backoff and time the body's exit spends blocked on downstream backpressure; `elapsedMs` uses the engine clock and is not replayed. On breach: append
 `BudgetExceeded`, abort that frame's in-flight steps through their `signal`, and end the run
 `failed{reason:'budget'}`.
 
