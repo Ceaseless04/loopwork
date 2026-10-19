@@ -1,10 +1,15 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { createReadStream, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { JsonValue } from '@loopwork/graph';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createBuiltins } from '../src/builtins.js';
 import type { PredicateContext, StepContext } from '../src/registry.js';
+
+vi.mock('node:fs', async (orig) => {
+  const actual = await orig<typeof import('node:fs')>();
+  return { ...actual, createReadStream: vi.fn(actual.createReadStream) };
+});
 
 const ctx = (over: Partial<StepContext> = {}): StepContext => ({
   runId: 'r1',
@@ -54,6 +59,28 @@ describe('builtins: sources', () => {
     writeFileSync(path, '{"a":1}\n2\n\n"x"\n\n');
     expect(await collect(need(b.get('source', 'fromFile'))(ctx(), { path }))).toEqual([{ a: 1 }, 2, 'x']);
   });
+
+  // many lines so the stream cannot reach its natural end (and autoDestroy) before the early exit
+  const bigFile = (lines: string[]) => {
+    const path = join(mkdtempSync(join(tmpdir(), 'lw-ndjson-')), 'big.ndjson');
+    writeFileSync(path, lines.join('\n') + '\n');
+    return path;
+  };
+  const lastStream = () => vi.mocked(createReadStream).mock.results.at(-1)?.value as { destroyed: boolean };
+
+  it('builtins: fromFile destroys the read stream when the consumer exits early', async () => {
+    const path = bigFile(Array.from({ length: 20000 }, (_, i) => String(i)));
+    const it = need(b.get('source', 'fromFile'))(ctx(), { path })[Symbol.asyncIterator]();
+    expect(await it.next()).toEqual({ done: false, value: 0 });
+    await it.return?.();
+    expect(lastStream().destroyed).toBe(true);
+  });
+
+  it('builtins: fromFile destroys the read stream when a line is invalid JSON', async () => {
+    const path = bigFile(['1', '{bad', ...Array.from({ length: 20000 }, (_, i) => String(i))]);
+    await expect(collect(need(b.get('source', 'fromFile'))(ctx(), { path }))).rejects.toThrow(SyntaxError);
+    expect(lastStream().destroyed).toBe(true);
+  });
 });
 
 describe('builtins: maps', () => {
@@ -84,6 +111,20 @@ describe('builtins: maps', () => {
     await preAssertion;
   });
 
+  it('builtins: sleep returns a rejected promise (never throws synchronously) for a missing ms', async () => {
+    let p: Promise<JsonValue> | undefined;
+    expect(() => {
+      p = map('sleep')(1, ctx(), {});
+    }).not.toThrow();
+    await expect(p).rejects.toThrow();
+  });
+
+  it('builtins: tag defaults an omitted value to null for object and non-object items', async () => {
+    const tag = map('tag');
+    expect(await tag({ a: 1 }, ctx(), { key: 't' })).toStrictEqual({ a: 1, t: null });
+    expect(await tag(5, ctx(), { key: 't' })).toStrictEqual({ value: 5, t: null });
+  });
+
   it('builtins: tag merges into objects and wraps non-objects', async () => {
     const tag = map('tag');
     expect(await tag({ a: 1 }, ctx(), { key: 't', value: 'v' })).toEqual({ a: 1, t: 'v' });
@@ -99,6 +140,9 @@ describe('builtins: maps', () => {
     for (const i of [0, 1, 3, 4]) await expect(run(i)).resolves.toBe(i);
     // the FIRST #<digits> in the id is the source index, later ones are fan-out positions
     await expect(run(0, 'src.out#2>m.out#0')).rejects.toThrow('boom');
+    // a '#' inside the source node name is not the index: only the one after '.out' counts
+    await expect(run(0, 'a#7.out#2')).rejects.toThrow('boom');
+    await expect(run(2, 'a#7.out#1')).resolves.toBe(2);
   });
 
   it('builtins: increment adds by (default 1) and rejects a non-number item', async () => {
@@ -135,5 +179,10 @@ describe('builtins: predicates', () => {
     expect(await lessThan(state, pctx, { path: 'stats.n', value: 3 })).toBe(false);
     expect(await truthy(state, pctx, { path: 'stats.ok' })).toBe(true);
     expect(await truthy(state, pctx, { path: 'stats.zero' })).toBe(false);
+  });
+
+  it('builtins: lessThan validates value even when the state at path is not a number', async () => {
+    const lessThan = need(b.get('predicate', 'lessThan'));
+    await expect(lessThan({ x: 'a' }, pctx, { path: 'x', value: 'bad' })).rejects.toThrow(TypeError);
   });
 });

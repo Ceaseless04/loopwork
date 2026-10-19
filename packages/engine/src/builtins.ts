@@ -46,14 +46,20 @@ export function createBuiltins(opts: { writeLine?: (line: string) => void } = {}
     yield* ctx.input;
   });
   r.source('fromFile', async function* (_ctx, params) {
-    const lines = createInterface({ input: createReadStream(param(params, 'path', 'string'), 'utf8'), crlfDelay: Infinity });
-    for await (const line of lines) if (line.trim() !== '') yield JSON.parse(line) as JsonValue;
+    const stream = createReadStream(param(params, 'path', 'string'), 'utf8');
+    const lines = createInterface({ input: stream, crlfDelay: Infinity });
+    try {
+      for await (const line of lines) if (line.trim() !== '') yield JSON.parse(line) as JsonValue;
+    } finally {
+      lines.close();
+      stream.destroy();
+    }
   });
 
   r.map('identity', async (item) => item);
-  r.map('sleep', (item, ctx, params) => {
-    const ms = param(params, 'ms', 'number');
-    return new Promise((resolve, reject) => {
+  r.map('sleep', (item, ctx, params) =>
+    new Promise((resolve, reject) => {
+      const ms = param(params, 'ms', 'number');
       const { signal } = ctx;
       if (signal.aborted) return reject(signal.reason);
       const onAbort = () => {
@@ -65,17 +71,17 @@ export function createBuiltins(opts: { writeLine?: (line: string) => void } = {}
         resolve(item);
       }, ms);
       signal.addEventListener('abort', onAbort, { once: true });
-    });
-  });
+    }),
+  );
   r.map('tag', async (item, _ctx, params) => {
     const key = param(params, 'key', 'string');
-    const value = isObject(params) ? (params.value as JsonValue) : null;
+    const value = isObject(params) ? (params.value ?? null) : null;
     return { ...(isObject(item) ? item : { value: item }), [key]: value };
   });
   r.map('failEvery', async (item, ctx, params) => {
     const n = param(params, 'n', 'number');
     const message = param(params, 'message', 'string');
-    const index = /#(\d+)/.exec(ctx.itemId)?.[1];
+    const index = /\.out#(\d+)/.exec(ctx.itemId)?.[1];
     if (index !== undefined && (Number(index) + 1) % n === 0) throw new Error(message);
     return item;
   });
@@ -86,7 +92,8 @@ export function createBuiltins(opts: { writeLine?: (line: string) => void } = {}
 
   r.predicate('lessThan', async (state, _ctx, params) => {
     const v = atPath(state, param(params, 'path', 'string'));
-    return typeof v === 'number' && v < param(params, 'value', 'number');
+    const limit = param(params, 'value', 'number');
+    return typeof v === 'number' && v < limit;
   });
   r.predicate('truthy', async (state, _ctx, params) => Boolean(atPath(state, param(params, 'path', 'string'))));
 
