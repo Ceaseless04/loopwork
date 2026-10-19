@@ -216,4 +216,132 @@ describe('runPool', () => {
     expect(seen).toEqual([]);
     expect(lim.inFlight).toBe(0);
   });
+
+  it('scheduler: the limiter permit is released before the handler continuation runs', async () => {
+    const limiter = createLimiter(1);
+    const seen: number[] = [];
+    await runPool({
+      input: await feed([1]),
+      concurrency: 1,
+      limiter,
+      handle: async () => async () => {
+        seen.push(limiter.inFlight);
+      },
+      signal: new AbortController().signal,
+    });
+    expect(seen).toEqual([0]);
+    expect(limiter.inFlight).toBe(0);
+  });
+
+  it('scheduler: a continuation error rejects the pool with that error and leaks no permit', async () => {
+    const boom = new Error('cont boom');
+    const limiter = createLimiter(1);
+    const pool = runPool({
+      input: await feed([1, 2]),
+      concurrency: 1,
+      limiter,
+      handle: async () => async () => {
+        throw boom;
+      },
+      signal: new AbortController().signal,
+    });
+    await expect(pool).rejects.toBe(boom);
+    expect(limiter.inFlight).toBe(0);
+  });
+
+  it('scheduler: backpressured sends in a continuation do not hold the shared permit (no deadlock at maxInFlight=1)', async () => {
+    const limiter = createLimiter(1);
+    const signal = new AbortController().signal;
+    const mid = createChannel<string>(1);
+    const seen: string[] = [];
+    const poolA = runPool({
+      input: await feed(['a', 'b']),
+      concurrency: 1,
+      limiter,
+      handle: async (item) => async () => {
+        for (let i = 0; i < 3; i++) await mid.send(`${item}${i}`);
+      },
+      signal,
+    }).then(() => mid.close());
+    const poolB = runPool({
+      input: mid,
+      concurrency: 1,
+      limiter,
+      handle: async (s) => {
+        seen.push(s);
+      },
+      signal,
+    });
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<string>((r) => (timer = setTimeout(() => r('timeout'), 1000)));
+    const outcome = await Promise.race([Promise.all([poolA, poolB]).then(() => 'done'), timeout]);
+    clearTimeout(timer);
+    expect(outcome).toBe('done');
+    expect(seen).toHaveLength(6);
+    expect(limiter.inFlight).toBe(0);
+  });
+
+  it.each([0, Number.NaN, -1, 1.5])('scheduler: concurrency %s rejects with RangeError', async (concurrency) => {
+    const pool = runPool({
+      input: await feed([1]),
+      concurrency,
+      limiter: createLimiter(1),
+      handle: async () => undefined,
+      signal: new AbortController().signal,
+    });
+    await expect(pool).rejects.toBeInstanceOf(RangeError);
+  });
+
+  it('scheduler: on a handler error the pool does not settle until sibling in-flight handlers have settled', async () => {
+    const boom = new Error('boom');
+    const sibling = deferred();
+    let settled = false;
+    const pool = runPool({
+      input: await feed([1, 2]),
+      concurrency: 2,
+      limiter: createLimiter(10),
+      handle: async (n) => {
+        if (n === 1) throw boom;
+        await sibling.promise;
+      },
+      signal: new AbortController().signal,
+    });
+    const observed = pool.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await tick();
+    expect(settled).toBe(false);
+
+    sibling.resolve();
+    await observed;
+    await expect(pool).rejects.toBe(boom);
+  });
+
+  it('scheduler: workers blocked in recv on an open, empty input are woken by abort', async () => {
+    const ac = new AbortController();
+    const handled: number[] = [];
+    const pool = runPool({
+      input: await feed([1], false),
+      concurrency: 2,
+      limiter: createLimiter(10),
+      handle: async (n) => {
+        handled.push(n);
+      },
+      signal: ac.signal,
+    });
+    await tick();
+    expect(handled).toEqual([1]);
+
+    ac.abort();
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<string>((r) => (timer = setTimeout(() => r('timeout'), 1000)));
+    const outcome = await Promise.race([pool.then(() => 'done'), timeout]);
+    clearTimeout(timer);
+    expect(outcome).toBe('done');
+  });
 });

@@ -34,16 +34,21 @@ export function createLimiter(max: number): Limiter {
 
 /**
  * Runs `concurrency` worker loops over `input`. Resolves once the input is closed and drained (or `signal`
- * aborts) and all running handlers returned; rejects with the first handler error, after which no further
- * items are started.
+ * aborts) and all running handlers returned. `handle` runs holding a limiter permit; it may return a
+ * continuation, which runs after the permit is released (so backpressured sends never hold the shared cap)
+ * and before the worker takes its next item. On the first handler/continuation error no further items are
+ * started, siblings are allowed to settle, and the pool rejects with that first error.
  */
 export async function runPool<T>(o: {
   input: Channel<T>;
   concurrency: number;
   limiter: Limiter;
-  handle: (item: T) => Promise<void>;
+  handle: (item: T) => Promise<void | (() => Promise<void>)>;
   signal: AbortSignal;
 }): Promise<void> {
+  if (!Number.isInteger(o.concurrency) || o.concurrency < 1) {
+    throw new RangeError(`pool concurrency must be an integer >= 1, got ${o.concurrency}`);
+  }
   const { input, limiter, handle } = o;
   // Aborted by the caller's signal or by the first handler error; wakes workers blocked on `recv`.
   const stop = new AbortController();
@@ -61,26 +66,35 @@ export async function runPool<T>(o: {
         throw e;
       }
       if (r.done) return;
+      // `acquire` is not abortable: handlers honour the signal, and a parked worker is woken when a holder releases.
       await limiter.acquire();
+      let next: void | (() => Promise<void>);
       try {
         if (stop.signal.aborted) return;
-        await handle(r.value);
+        next = await handle(r.value);
       } finally {
         limiter.release();
       }
+      if (next) await next();
     }
   };
 
+  let failed = false;
+  let firstError: unknown;
   try {
-    await Promise.all(
+    await Promise.allSettled(
       Array.from({ length: o.concurrency }, () =>
         worker().catch((e: unknown) => {
+          if (!failed) {
+            failed = true;
+            firstError = e;
+          }
           stop.abort();
-          throw e;
         }),
       ),
     );
   } finally {
     o.signal.removeEventListener('abort', onAbort);
   }
+  if (failed) throw firstError;
 }
