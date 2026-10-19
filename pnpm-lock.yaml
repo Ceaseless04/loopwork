@@ -185,6 +185,15 @@ importers:
         specifier: ^5.0.3
         version: 5.0.3(@types/node@26.6.5)(@vitest/coverage-v8@5.0.3)(vite@8.3.4(@types/node@26.6.5))
 
+  packages/engine:
+    dependencies:
+      '@loopwork/eventlog':
+        specifier: workspace:*
+        version: link:../eventlog
+      '@loopwork/graph':
+        specifier: workspace:*
+        version: link:../graph
+
   packages/eventlog:
     dependencies:
       '@loopwork/graph':
