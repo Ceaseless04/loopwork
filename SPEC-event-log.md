@@ -49,7 +49,7 @@ the values `EVENT_TYPES`, `MemoryStore`, `PgStore`, `migrate`, `applyEvent`, `em
 Every stored event is `{ runId, seq, ts, type, ...payload }`. `seq` is per run, starts at 1, gapless. `node` is
 always a **scoped node id** (`frame.inner.node`, see `SPEC-graph-model.md`). `itemId` is deterministic:
 source items `${node}.out#${index}`; step outputs `${inputItemId}>${node}.${port}#${k}`. Replaying a step
-therefore reproduces identical ids.
+therefore reproduces identical ids. A `while`/`until` iteration n's body entry item is `${instanceItemId}>${frame}.iter#${n}` (ids stay constant-length across iterations).
 
 ```ts
 type NewEvent =
@@ -67,7 +67,8 @@ type NewEvent =
   | { type: 'FrameEntered';    node: string; itemId: string; frame: 'foreach'|'while'|'until'|'retry' }
   | { type: 'IterationStarted';node: string; itemId: string; iteration: number }
   | { type: 'IterationEnded';  node: string; itemId: string; iteration: number; elapsedMs: number }
-  | { type: 'FrameExited';     node: string; itemId: string; reason: 'input-done'|'condition'|'success'|'retries-exhausted' }
+  | { type: 'FrameExited';     node: string; itemId: string; reason: 'input-done'|'condition'|'success'|'retries-exhausted';
+                               outputs?: { port: string; itemId: string; value: JsonValue }[] }   // while/until final state; retry emit-error
   | { type: 'BudgetExceeded';  node: string; itemId: string; budget: 'iterations'|'time'; limit: number; used: number };
 type LoopworkEvent = NewEvent & { runId: string; seq: number; ts: string /* ISO-8601 */ };
 ```
@@ -120,8 +121,8 @@ foldRun(events: Iterable<LoopworkEvent>): RunState          // pure, determinist
 applyEvent(state: RunState, e: LoopworkEvent): RunState     // incremental form; foldRun = reduce(applyEvent)
 ```
 `RunState` (shared by the engine, for resume, and by `run-service`, for views) contains: `status`, `flow`, `lastSeq`,
-`attempt`, `failure?`, per-node `{started, succeeded, failed, inFlight: Set<itemId>}`, per-edge `{emitted, consumed}`,
-per-frame `{iterationsStarted, iterationsEnded, active: Set<itemId>, elapsedMs, exited}`, `sourcesCompleted`, the
+`attempt`, `failure?`, per-node `{started, succeeded, failed, inFlight: Map<itemId, attempt>}`, per-edge `{emitted, consumed}`,
+per-frame `{iterationsStarted, iterationsEnded, exitedCount, active: Map<itemId, {iteration, elapsedMs, breached}>}` (one entry per live frame instance), `sourcesCompleted`, the
 set of **committed items** (step `StepSucceeded` per `(node, itemId)`), a bounded `recentErrors` (last 50), and
 `sideEffects: Map<(node,itemId,key), JsonValue>`. `applyEvent` mutates a state it owns for speed; `foldRun`
 over 1M events must stay under 5 s.
@@ -131,9 +132,9 @@ Fold semantics as implemented in `fold.ts` and pinned by `fold.test.ts` (except 
 - `emptyRunState()` is `{ status: 'queued', lastSeq: 0, attempt: 0 }` with empty maps and sets. `attempt` is the **highest** `RunStarted.attempt` seen (not the last), consistent with resume = `attempt + 1`. The first event must be `RunCreated` (else `InvalidEventError`).
 - Edge counters are keyed by edge id (`SPEC-graph-model.md`) over the flattened, scoped edges of the `RunCreated` flow (body edges included), each pre-populated with `{ emitted: 0, consumed: 0 }`. There are no synthetic entry/exit edges.
 - An item's producer is the last `>`-separated segment of its `itemId` without the trailing `#k`. `consumed` increments on `StepStarted` only when `attempt === 1` (retries do not consume again), and on `FrameEntered` (which consumes the frame's `in` edge). `emitted` increments on `ItemEmitted` (the node's `out`) and on each output of `StepSucceeded`.
-- A frame's body exit endpoint `F.<exit.node>.<exit.port>` is aliased to `F.out`: edges leaving `F.out` count the body exit's outputs as emitted and consumed. For `while`/`until` the body exit does not emit on `F.out` (those frames emit only their final state): `F.out` edges are emitted at `FrameExited` with `reason: 'condition'`.
-- `nodes[n].started` counts every `StepStarted`. `inFlight` gains the item on `StepStarted` and loses it on `StepSucceeded` and on **any** `StepFailed`, including one with `willRetry: true`. `committed` is added to only by `StepSucceeded`. `recentErrors` gets one entry per `StepFailed`, the latest 50 kept.
-- `frames` is keyed by scoped node id. `exited` turns true on a `FrameExited` and is never reset; what it means while some instances are still active is unspecified (only "before any exit" and "after all exits" are pinned). A `foreach` frame emits `FrameEntered`/`FrameExited` once per input-item instance, so the per-frame state aggregates instances.
+- A frame's body exit endpoint `F.<exit.node>.<exit.port>` is aliased to `F.out`: edges leaving `F.out` count the body exit's outputs as emitted and consumed. For `while`/`until` the body exit does not emit on `F.out` (those frames emit only their final state). Every emission on a frame port other than the aliased body exit (while/until `out`, retry `error`) is carried by `FrameExited.outputs` and counted from there, so a zero-iteration `while` and a retry `emit-error` both count.
+- `nodes[n].started` counts every `StepStarted`. `inFlight` maps the item to the attempt of its latest `StepStarted`, and loses it on `StepSucceeded` and on `StepFailed` with `willRetry: false`. A `StepFailed` with `willRetry: true` keeps it, so a crash before the next `StepStarted` leaves the item resumable (resume re-runs it with `attempt + 1`, backoff restarting in full). `attempt` counts executions, including ones cut short by a crash. `committed` is added to only by `StepSucceeded`. `recentErrors` gets one entry per `StepFailed`, the latest 50 kept.
+- `frames` is keyed by scoped node id; each holds the live **instances** keyed by the `FrameEntered.itemId`, carrying `{iteration, elapsedMs, breached}`. An instance is created on `FrameEntered`, advanced by `IterationStarted`/`IterationEnded` (`elapsedMs` accumulates `IterationEnded.elapsedMs`), marked `breached` by `BudgetExceeded`, and **deleted** on its `FrameExited` (so fold memory is bounded by live instances); `exitedCount` increments. A `foreach` emits `FrameEntered`/`FrameExited{input-done}` per input item, so each item is its own instance; "all input done" is derived (`in` closed, no active instances), not an event.
 - `RunStarted` clears `failure` (a resume reopens a failed run). `BudgetExceeded` has no effect on the folded state (the status change comes from the `RunFailed` that follows).
 
 ## Code Style
