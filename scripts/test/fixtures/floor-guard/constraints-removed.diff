@@ -1,0 +1,12 @@
+diff --git a/CONSTRAINTS.md b/CONSTRAINTS.md
+index 438e86f..8eb463c 100644
+--- a/CONSTRAINTS.md
++++ b/CONSTRAINTS.md
+@@ -11,7 +11,6 @@ is installed by the scaffold task in the first handoff brief. Tightening this fi
+ - No skipped or deleted tests (`.skip`, `.todo`, `xit`, removed assertions) without a reason in the commit message
+ - No secrets in source, config, fixtures or docs. `DATABASE_URL` values and passwords are never committed
+ - Library code (`packages/*`) never writes to stdout (`console.log`, `process.stdout.write`): stdout belongs to the CLI and the MCP protocol
+-- Servers bind `127.0.0.1` only: no `0.0.0.0`, `::`, or `host:` options other than loopback
+ - This file does not get weakened to make a change pass
+ 
+ ## Enforced with numbers

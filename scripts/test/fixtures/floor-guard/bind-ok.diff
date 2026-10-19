@@ -1,0 +1,20 @@
+diff --git a/packages/ui-server/src/server.ts b/packages/ui-server/src/server.ts
+new file mode 100644
+index 0000000..7d97d71
+--- /dev/null
++++ b/packages/ui-server/src/server.ts
+@@ -0,0 +1,14 @@
++import { createServer } from 'node:http';
++const server = createServer();
++server.listen(7777, '127.0.0.1');
++export const opts = { host: '127.0.0.1', port: 7778 };
++server.listen(7, 'localhost');
++server.listen({
++  port: 7,
++  host: '127.0.0.1',
++});
++server.listen({ path: sock });
++export const v6 = { host: '::1', port: 1 };
++export type Opts = { host: string; port: number };
++export type Opt2 = { host?: string, port: number };
++server.listen(7, '::1');

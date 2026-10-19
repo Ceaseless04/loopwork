@@ -1,0 +1,33 @@
+diff --git a/packages/engine/src/stub.ts b/packages/engine/src/stub.ts
+new file mode 100644
+index 0000000..6295525
+--- /dev/null
++++ b/packages/engine/src/stub.ts
+@@ -0,0 +1,20 @@
++export function a(): never {
++  throw new Error('Not implemented');
++}
++export function b(): void {
++  try { risky(); } catch {}
++}
++export function c(): void {
++  try { risky(); } catch (error) {}
++}
++export function d(): number {
++  // TODO: implement d
++  return 0;
++}
++throw new Error("Method not implemented.");
++throw Error('not implemented');
++throw new Error(`not implemented`);
++throw new Error( 'Not yet implemented');
++try { risky(); } catch {/* ignore */}
++try { risky(); } catch (e) { ; }
++// FIXME: implement
+diff --git a/scripts/stub.mjs b/scripts/stub.mjs
+new file mode 100644
+index 0000000..3e631c2
+--- /dev/null
++++ b/scripts/stub.mjs
+@@ -0,0 +1 @@
++throw new Error("Not implemented");

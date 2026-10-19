@@ -1,0 +1,8 @@
+diff --git a/packages/eventlog/src/reason.ts b/packages/eventlog/src/reason.ts
+new file mode 100644
+index 0000000..73b1d95
+--- /dev/null
++++ b/packages/eventlog/src/reason.ts
+@@ -0,0 +1,2 @@
++// @ts-expect-error: deliberate type mismatch for the test
++export const x: number = 's';

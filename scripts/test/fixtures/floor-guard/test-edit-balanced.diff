@@ -1,0 +1,12 @@
+diff --git a/packages/eventlog/test/z.test.ts b/packages/eventlog/test/z.test.ts
+index c61c333..9a7edc3 100644
+--- a/packages/eventlog/test/z.test.ts
++++ b/packages/eventlog/test/z.test.ts
+@@ -6,6 +6,6 @@ describe('append', () => {
+     const log = append([], 'a');
+     expect(log).toEqual(['a']);
+     expect(log).toHaveLength(1);
+-    expect(log[0]).toBe('a');
++    expect(log.at(0)).toBe('a');
+   });
+ });
