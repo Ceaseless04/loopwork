@@ -44,33 +44,33 @@ const flow: Flow = {
   ],
 };
 
-  const whileFlow: Flow = {
-    version: 1,
-    id: 'w',
-    name: 'w',
-    nodes: {
-      src: { kind: 'source', fn: 'range', out: {} },
-      W: {
-        kind: 'frame',
-        frame: 'while',
-        budgets: { maxIterations: 10, maxDurationMs: 1000 },
-        condition: 'lessThan',
-        in: {},
-        out: {},
-        body: {
-          nodes: { x: { kind: 'map', fn: 'increment', in: {}, out: {} } },
-          edges: [],
-          entry: { node: 'x', port: 'in' },
-          exit: { node: 'x', port: 'out' },
-        },
+const whileFlow: Flow = {
+  version: 1,
+  id: 'w',
+  name: 'w',
+  nodes: {
+    src: { kind: 'source', fn: 'range', out: {} },
+    W: {
+      kind: 'frame',
+      frame: 'while',
+      budgets: { maxIterations: 10, maxDurationMs: 1000 },
+      condition: 'lessThan',
+      in: {},
+      out: {},
+      body: {
+        nodes: { x: { kind: 'map', fn: 'increment', in: {}, out: {} } },
+        edges: [],
+        entry: { node: 'x', port: 'in' },
+        exit: { node: 'x', port: 'out' },
       },
-      snk: { kind: 'sink', fn: 'discard', in: {} },
     },
-    edges: [
-      { from: { node: 'src', port: 'out' }, to: { node: 'W', port: 'in' } },
-      { from: { node: 'W', port: 'out' }, to: { node: 'snk', port: 'in' } },
-    ],
-  };
+    snk: { kind: 'sink', fn: 'discard', in: {} },
+  },
+  edges: [
+    { from: { node: 'src', port: 'out' }, to: { node: 'W', port: 'in' } },
+    { from: { node: 'W', port: 'out' }, to: { node: 'snk', port: 'in' } },
+  ],
+};
 
 const toLog = (news: NewEvent[]): LoopworkEvent[] =>
   news.map((e, i) => ({ ...e, runId: 'r1', seq: i + 1, ts: '2026-01-01T00:00:00.000Z' }));
@@ -445,7 +445,7 @@ describe('foldRun', () => {
     expect(edgeOf(s, 'F.out->snk.in')).toEqual({ emitted: 1, consumed: 1 });
   });
 
-  it('EL-7: while/until count emitted on the frame out edges only at FrameExited{condition}, not per iteration', () => {
+  it('EL-7: while/until count emitted on the frame out edges from FrameExited.outputs, not per iteration or by reason', () => {
     const first = 'src.out#0';
     const states = [first, `${first}>W.x.out#0`, `${first}>W.x.out#0>W.x.out#0`, `${first}>W.x.out#0>W.x.out#0>W.x.out#0`];
     const body: NewEvent[] = [];
@@ -560,6 +560,7 @@ describe('foldRun', () => {
       ]),
     );
     expect(edgeOf(s, 'R.error->dlq.in')).toEqual({ emitted: 1, consumed: 1 });
+    // the `out` output on the retries-exhausted event is synthetic: it proves every output is counted, not only outputs[0]
     expect(edgeOf(s, 'R.out->dlq.in').emitted).toBe(1); // every output is emitted, not just outputs[0]
   });
 
