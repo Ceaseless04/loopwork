@@ -206,7 +206,7 @@ export function applyEvent(state: RunState, e: LoopworkEvent): RunState {
       const f = frameOf(state, e.node);
       f.active.delete(e.itemId);
       f.exitedCount++;
-      if (e.reason === 'condition') emit(lookup, `${e.node}.out`); // while/until emit only their final state
+      for (const o of e.outputs ?? []) emit(lookup, `${e.node}.${o.port}`); // the frame's emissions are its outputs
       break;
     }
     default:
