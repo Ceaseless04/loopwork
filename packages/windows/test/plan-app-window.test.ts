@@ -13,12 +13,14 @@ const WIN_EDGE = 'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe';
 
 // cmd.exe `start "" <url>`: the empty title is the literal "" caret-escaped, the URL is caret-escaped.
 const cmdStart = (u: string) => ({ command: 'cmd.exe', args: ['/c', 'start', '^"^"', u] });
+// On wsl, interop re-quotes any argument with a space or `"`, so no empty title and no quoting beyond the caret escape.
+const wslCmdStart = (u: string) => ({ command: 'cmd.exe', args: ['/c', 'start', u] });
 
 // One link of a fallback chain: provisioned through `files` or `tools`, and the step it yields.
 type Link = { file?: string; tool?: string; step: { command: string; args: string[] } };
 const chrome = (command: string, file: string): Link => ({ file, step: { command, args: [app(URL)] } });
 const chains: [Platform, Link[]][] = [
-  ['wsl', [chrome(WSL_CHROME[0]!, WSL_CHROME[0]!), chrome(WSL_EDGE[0]!, WSL_EDGE[0]!), { tool: 'wslview', step: { command: 'wslview', args: [URL] } }, { tool: 'cmd.exe', step: cmdStart(URL) }]],
+  ['wsl', [chrome(WSL_CHROME[0]!, WSL_CHROME[0]!), chrome(WSL_EDGE[0]!, WSL_EDGE[0]!), { tool: 'wslview', step: { command: 'wslview', args: [URL] } }, { tool: 'cmd.exe', step: wslCmdStart(URL) }]],
   ['win32', [chrome(WIN_CHROME, WIN_CHROME), chrome(WIN_EDGE, WIN_EDGE), { tool: 'cmd.exe', step: cmdStart(URL) }]],
   [
     'darwin',
@@ -54,7 +56,7 @@ describe('planAppWindow', () => {
   });
 
   it('WL-1: the stock fixtures (no browser installed) fall through to the system opener', () => {
-    expect(planAppWindow(URL, fixtures.wsl)?.steps).toEqual([{ command: 'wslview', args: [URL] }, cmdStart(URL)]);
+    expect(planAppWindow(URL, fixtures.wsl)?.steps).toEqual([{ command: 'wslview', args: [URL] }, wslCmdStart(URL)]);
     expect(planAppWindow(URL, fixtures.darwin)?.steps).toEqual([{ command: 'open', args: [URL] }]);
     expect(planAppWindow(URL, fixtures.linux)?.steps).toEqual([{ command: 'xdg-open', args: [URL] }]);
     expect(planAppWindow(URL, fixtures.win32)?.steps).toEqual([cmdStart(URL)]);
@@ -129,11 +131,20 @@ describe('planAppWindow', () => {
   });
 
   // The URL grammar allows & and %, which would split or expand on a cmd.exe command line.
-  it('cmd.exe `start "" <url>` fallback carets & and % in the URL and the empty title', () => {
+  it('cmd.exe start fallback carets & and % in the URL (win32 also the empty title; wsl has no title)', () => {
     const url = 'http://127.0.0.1:5173/a?x=1&y=2%20z';
-    for (const platform of ['wsl', 'win32'] as const) {
-      const plan = planAppWindow(url, makeEnv({ platform, tools: ['cmd.exe'] }));
-      expect(plan?.steps).toEqual([{ command: 'cmd.exe', args: ['/c', 'start', '^"^"', 'http://127.0.0.1:5173/a?x=1^&y=2^%20z'] }]);
+    const careted = 'http://127.0.0.1:5173/a?x=1^&y=2^%20z';
+    const plan = (platform: 'wsl' | 'win32') => planAppWindow(url, makeEnv({ platform, tools: ['cmd.exe'] }))?.steps;
+    expect(plan('wsl')).toEqual([{ command: 'cmd.exe', args: ['/c', 'start', careted] }]);
+    expect(plan('win32')).toEqual([{ command: 'cmd.exe', args: ['/c', 'start', '^"^"', careted] }]);
+  });
+
+  it('wsl: no cmd.exe step passes an argument containing a double quote (WSL interop would re-quote it)', () => {
+    const env = makeEnv({ platform: 'wsl', files: [...WSL_CHROME, ...WSL_EDGE], tools: ['wslview', 'cmd.exe'] });
+    for (const url of [URL, 'http://127.0.0.1:5173/a?x=1&y=2%20z']) {
+      const cmdSteps = planAppWindow(url, env)?.steps.filter((s) => s.command === 'cmd.exe');
+      expect(cmdSteps).toHaveLength(1);
+      expect(cmdSteps!.flatMap((s) => s.args).some((a) => a.includes('"'))).toBe(false);
     }
   });
 });

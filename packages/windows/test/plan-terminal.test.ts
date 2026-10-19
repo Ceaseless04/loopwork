@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { planTerminal } from '../src/plan-terminal.js';
-import { joinCmd, joinPosix, quoteCmd, quotePosix } from '../src/quote.js';
+import { joinCmd, joinPosix, quotePosix } from '../src/quote.js';
 import type { Platform } from '../src/types.js';
 import { fixtures, makeEnv } from './fixtures/env.js';
 
@@ -16,7 +16,6 @@ describe('planTerminal', () => {
   // WL-1: documented first choice per fixture (command + leading args)
   it.each([
     ['wsl', 'wt.exe', ['-w', 'new', '--title', 'T', 'wsl.exe', '--cd', '/work', '--exec']],
-    ['wsl-no-wt', 'cmd.exe', ['/c', 'start', 'wsl.exe']],
     ['darwin', 'osascript', ['-e']],
     ['darwin-iterm', 'osascript', ['-e']],
     ['linux', 'x-terminal-emulator', ['-e']],
@@ -35,7 +34,8 @@ describe('planTerminal', () => {
 
   // WL-1: removing the first tool from `which` yields the next choice, down to nothing
   const chains: [Platform, Record<string, string>, string[], [string, string[]][]][] = [
-    ['wsl', { WSL_DISTRO_NAME: 'Ubuntu' }, ['wsl.exe'], [['wt.exe', ['-w', 'new', '--title', 'loopwork']], ['cmd.exe', ['/c', 'start', 'wsl.exe']]]],
+    // cmd.exe is provisioned but must never be used on wsl: WSL interop re-quotes pre-escaped cmd text.
+    ['wsl', { WSL_DISTRO_NAME: 'Ubuntu' }, ['wsl.exe', 'cmd.exe'], [['wt.exe', ['-w', 'new', '--title', 'loopwork']]]],
     ['win32', {}, [], [['wt.exe', ['-w', 'new', '--title', 'loopwork']], ['cmd.exe', ['/c', 'start']]]],
     ['darwin', {}, [], [['osascript', ['-e']]]],
     [
@@ -94,12 +94,11 @@ describe('planTerminal', () => {
     expect(planTerminal({ argv, cwd }, fixtures.darwin)?.steps[0]?.args).toEqual(['-e', `tell application "Terminal" to do script "${appleEscape(line)}"`]);
   });
 
-  // wsl.exe is a normal program: each token after `start` is quoteCmd-ed (argv quoting + caret), so the sh payload stays ONE arg.
-  it('wsl: the cmd.exe /c start wsl.exe fallback quotes every token after start via quoteCmd (wsl.exe --exec)', () => {
-    const hostile = ['echo', 'a&b c'];
-    const wslArgs = ['wsl.exe', '--cd', '/my work', '--exec', ...keepPayload(joinPosix(hostile))];
-    const step = planTerminal({ argv: hostile, cwd: '/my work' }, fixtures['wsl-no-wt'])?.steps[0];
-    expect(step).toEqual({ command: 'cmd.exe', args: ['/c', 'start', ...wslArgs.map(quoteCmd)] });
+  it('wsl: without wt.exe there is no terminal strategy, and no wsl terminal step is cmd.exe', () => {
+    expect(planTerminal({ argv }, fixtures['wsl-no-wt'])).toBeUndefined();
+    for (const req of [{ argv }, { argv: ['echo', 'a"b;c&d'], cwd: '/my work', keepOpen: false }]) {
+      expect(commands(planTerminal(req, fixtures.wsl))).toEqual(['wt.exe']);
+    }
   });
 
   // win32 fallback: the inner program is cmd.exe itself, so tokens are caret-escaped only (no argv quoting);

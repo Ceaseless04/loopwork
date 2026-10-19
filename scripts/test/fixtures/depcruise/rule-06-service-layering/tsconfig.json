@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@loopwork/graph": ["packages/graph/src/index.ts"],
+      "@loopwork/eventlog": ["packages/eventlog/src/index.ts"],
+      "@loopwork/windows": ["packages/windows/src/index.ts"],
+      "@loopwork/engine": ["packages/engine/src/index.ts"],
+      "@loopwork/runtime": ["packages/runtime/src/index.ts"],
+      "@loopwork/service": ["packages/service/src/index.ts"],
+      "@loopwork/ui-server": ["packages/ui-server/src/index.ts"],
+      "@loopwork/mcp": ["packages/mcp/src/index.ts"],
+      "@loopwork/cli": ["apps/cli/src/index.ts"],
+      "@loopwork/claude-integration": ["integrations/claude/src/index.ts"]
+    }
+  }
+}

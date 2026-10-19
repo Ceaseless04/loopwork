@@ -31,10 +31,16 @@ packages/graph/
   src/types.ts          Flow, Node, Edge, Frame, Budgets, Schema, JsonValue
   src/schema.ts         inferSchema, isAssignable, conformsTo
   src/parse.ts          parseFlow(unknown): structural parse (shape, not semantics)
-  src/validate.ts       validateFlow: DAG, budgets, exits, wiring, types
+  src/validate.ts       validateFlow: runs the checkers below, concatenates and sorts their errors
+  src/validate-structure.ts  E_DUPLICATE_ID, E_UNKNOWN_NODE, E_UNKNOWN_PORT, E_NESTING_DEPTH
+  src/validate-cycles.ts     E_CYCLE
+  src/validate-limits.ts     E_MISSING_BUDGET, E_MISSING_EXIT, E_BAD_LIMIT
+  src/validate-types.ts      E_TYPE_MISMATCH, E_UNCONNECTED_PORT, E_SHAPE for an unresolved inferFrom
+  src/walk.ts           scope walker (outer graph + every body) and the JSON-pointer path convention
   src/builder.ts        flow() fluent TS builder producing a Flow
   src/ids.ts            scoped node ids and edge ids
-  test/*.test.ts
+  test/*.test.ts        test/codes/e-*.test.ts: one file per error code
+  test/fixtures/*.flow.json
 ```
 
 ## The IR
@@ -100,6 +106,22 @@ may be absent or out of range in a parsed flow; `validateFlow` reports those (`E
 by passing it through `parseFlow`. Schemas and `inferFrom` samples must be well-formed (exactly one union member, plain
 JSON values): `inferSchema`, `isAssignable` and `conformsTo` assume it.
 
+`validateFlow`'s contract is that its input came through `parseFlow` (so `run-service` always calls `parseFlow` before
+`validateFlow`). Out-of-contract input (for example a `null` node or `edges` that is not an array) may make it throw. The one
+parse-stage condition it still checks is an unresolved `{ inferFrom }` (`E_SHAPE`, message `unresolved inferFrom: run
+parseFlow`, at `<node path>/in` or `/out`). Errors are sorted by `path` as plain strings (UTF-16 code-unit order, not numeric:
+`/edges/10` sorts before `/edges/2`); ties keep the checker order (structure, cycles, limits, types).
+
+`flow()` builder: `edge(from, to)` takes `'node.port'` strings and splits at the **last** `.` (node ids may be scoped, ports
+never contain `.`); a string with no `.` yields an empty port rather than an error. `build()` returns a lossless deep copy
+(`structuredClone`) and neither validates nor sanitises, so `NaN`, `Infinity` or `undefined` reach `parseFlow` intact. Frames
+are added with a complete `Frame` object (no callback form); their body edges are `{ node, port }` objects, not strings.
+
+Public entry (`src/index.ts`) exports exactly: the functions `parseFlow`, `validateFlow`, `inferSchema`, `isAssignable`,
+`conformsTo`, `flow`, `edgeId`, `scopedId`; the constant `ERROR_CODES` (frozen, same order as the table below); and the types
+`Body`, `Budgets`, `Edge`, `ErrorCode`, `Flow`, `FlowNode`, `Frame`, `JsonValue`, `ParseResult`, `PortRef`, `PortSpec`,
+`Schema`, `ValidationError`, `ValidationResult`. `FlowBuilder` is not exported by name.
+
 `parseFlow` never throws, and for JSON data (the output of `JSON.parse`, or plain objects built from it) it does
 bounded work: an array whose `length` is not a non-negative integer is `E_SHAPE` at `<path>/length`. Work is counted in
 units: one per value read or container visited, plus one per character beyond 256 of every object key visited and of
@@ -117,15 +139,15 @@ Error codes (stable; additive only):
 | Code | Raised when |
 |---|---|
 | `E_SHAPE` | not a Flow (parse stage): missing/ill-typed fields; **unknown extra keys** on any closed object (flow, node, frame, body, budgets, backoff, edge, port ref); unsupported schema keyword, a schema that is not exactly one union member, empty `anyOf`/`enum`; unknown `kind`/`frame`; non-finite numbers or `undefined` values; `inferFrom` samples that are not plain JSON values; an `{ inferFrom }` that reaches `validateFlow` unresolved |
-| `E_DUPLICATE_ID` | node id repeated in a scope, or id contains `.` |
-| `E_UNKNOWN_NODE` / `E_UNKNOWN_PORT` | edge references a missing node or a port the node kind doesn't have |
-| `E_CYCLE` | the outer graph or any body has a cycle; message lists the cycle's node ids |
+| `E_DUPLICATE_ID` | node id contains `.` or `->` (ids are record keys, so a literal repeat cannot occur; these two collide in the scoped-id / edge-id namespace), at the node's pointer |
+| `E_UNKNOWN_NODE` / `E_UNKNOWN_PORT` | edge, body `entry` or body `exit` references a missing node, or a port the node kind doesn't have, or uses a port in the wrong direction (an edge's `from` must be `out` or `error`, its `to` must be `in`; body `entry` must be `in`, `exit` must be `out`): direction misuse is `E_UNKNOWN_PORT` |
+| `E_CYCLE` | the outer graph or any body has a cycle: one error per scope, at the scope's pointer, `node` is the cycle's first node; message is `cycle: a -> b -> a` with scoped ids, the first id repeated at the end |
 | `E_MISSING_BUDGET` | frame lacks `maxIterations` or `maxDurationMs`, or either is not a positive integer |
-| `E_MISSING_EXIT` | `while`/`until` without `condition`; `retry` with `maxAttempts < 1`; frame body has no reachable path entry to exit |
-| `E_TYPE_MISMATCH` | an edge's `from` schema is not assignable to its `to` schema; `while`/`until` body output not assignable to body input (state loop). An untyped (`{}`) source is assignable only to an untyped target, so `{}` to a typed port is a mismatch (ADR 0004) |
-| `E_UNCONNECTED_PORT` | a required input port has no incoming edge; a source/map/frame `out` with no outgoing edge **is allowed** (output is dropped) |
-| `E_BAD_LIMIT` | `concurrency` or `maxAttempts` not a positive integer; `backoff.baseMs` negative |
-| `E_NESTING_DEPTH` | frames nested deeper than 8 (guards the engine and the UI) |
+| `E_MISSING_EXIT` | `while`/`until` without `condition` (at `.../condition`); `retry` with a numeric `maxAttempts < 1` (at `.../maxAttempts`; this value is `E_MISSING_EXIT` only, never also `E_BAD_LIMIT`); frame body has no path from entry to exit (at `<scope>/nodes/<frame>/body/exit`; skipped when the entry or exit node is unknown, which is `E_UNKNOWN_NODE`'s to report) |
+| `E_TYPE_MISMATCH` | an edge's `from` schema is not assignable to its `to` schema (a retry frame's `error` port carries `{ message: string, item: {} }`, both required); a frame's `in` not assignable to its body entry port's schema, or the body exit port's schema not assignable to the frame's `out` (frame boundary, at `.../body/entry` and `.../body/exit`); `while`/`until` body output not assignable to body input (state loop, at `.../body`). An untyped (`{}`) source is assignable only to an untyped target, so `{}` to a typed port is a mismatch (ADR 0004). The message embeds both schemas as JSON |
+| `E_UNCONNECTED_PORT` | a required input port has no incoming edge (a frame's body entry node counts as fed by the frame boundary); a source/map/frame `out` with no outgoing edge **is allowed** (output is dropped) |
+| `E_BAD_LIMIT` | `concurrency` not a positive integer (a `foreach` frame requires it: absent is `E_BAD_LIMIT`; on `map`/`sink` it is optional); `retry` `maxAttempts` absent or not an integer (a number below 1 is `E_MISSING_EXIT` instead); `backoff.baseMs` absent, negative or not a number |
+| `E_NESTING_DEPTH` | frames nested deeper than 8 (guards the engine and the UI): reported at every frame beyond the 8th level, not only the first |
 
 ## Code Style
 
@@ -137,7 +159,7 @@ Collect all errors; sort by `path` for stable output. Cycle detection is iterati
 
 ## Testing Strategy
 
-Unit tests only. Table-driven tests: one file per error code with a minimal failing flow and the expected `code` + `path`. Property-style test for `inferSchema`: every sample passed to `inferSchema(samples)` must satisfy `conformsTo(sample, result)`. Golden fixtures in `test/fixtures/*.flow.json` (also reused by other modules): `simple-pipeline`, `foreach-100k`, `while-counter`, `retry-flaky`, `nested-frames`.
+Unit tests only. Table-driven tests: one file per error code with a minimal failing flow and the expected `code` + `path`. Property-style test for `inferSchema`: every sample passed to `inferSchema(samples)` must satisfy `conformsTo(sample, result)`. Golden fixtures in `test/fixtures/*.flow.json` (also reused by other modules): `simple-pipeline`, `foreach-100k`, `while-counter`, `retry-flaky`, `nested-frames`. The fixtures are not exported by the package: other modules import them by relative path with `with { type: 'json' }` and need their own `*.flow.json` module declaration (see `packages/graph/test/json-modules.d.ts`).
 
 ## Boundaries
 
@@ -160,3 +182,13 @@ Unit tests only. Table-driven tests: one file per error code with a minimal fail
 ## Open Questions
 
 None blocking. Note: schema `anyOf` assignability is implemented conservatively (a union is assignable only if every member is); document false negatives rather than risk false positives.
+
+Known false negatives of `isAssignable` (so `E_TYPE_MISMATCH` can fire on an edge that is fine at runtime; the full list is in the `isAssignable` comment in `src/schema.ts`):
+- An inferred object schema is never closed, so it never assigns to a closed hand-written target.
+- An open source that lacks one of a target's optional properties is rejected.
+- Integral samples infer `integer`: `inferFrom [{ price: 9.99 }]` does not assign to `inferFrom [{ price: 10 }]`.
+- An empty-array sample infers `items: {}`, so it does not assign to an array of a typed item (this bites a `while` state with `items: []`).
+- Merged inference cannot feed a discriminated union; `boolean` does not assign to `enum [true, false]` or to `anyOf` of the two literals.
+- An untyped (`{}`) source never feeds a typed port (ADR 0004).
+
+Performance limit: the body-reachability check in `E_MISSING_EXIT` is linear in nodes plus edges (adjacency map); GM-8 is measured on a 5,000-node flow and on a 5,000-node frame body.

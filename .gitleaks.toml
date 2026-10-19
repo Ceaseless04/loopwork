@@ -1,0 +1,14 @@
+# Default ruleset plus path-scoped allowlists only (never a global allowlist).
+[extend]
+useDefault = true
+
+# Documented fake secrets used as floor-guard test fixtures.
+[[allowlists]]
+description = "floor-guard fixtures contain placeholder secrets on purpose"
+paths = ['^scripts/test/fixtures/floor-guard/']
+
+# The documented Postgres test database URL, only where it is documented or used (dots unescaped so floor-guard's literal exemption also matches).
+[[allowlists]]
+description = "documented test DB URL"
+paths = ['^docker-compose\.test\.yml$', '^scripts/test/compose\.test\.ts$', '^packages/eventlog/.*\.test\.ts$']
+regexes = ['postgres://loopwork:loopwork@127.0.0.1:55432/loopwork_test']

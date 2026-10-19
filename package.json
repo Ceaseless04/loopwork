@@ -12,7 +12,11 @@
     "lint": "eslint .",
     "test": "node scripts/test.mjs --project unit",
     "test:pg": "vitest run --project pg --passWithNoTests",
-    "test:e2e": "vitest run --project e2e --passWithNoTests"
+    "test:e2e": "vitest run --project e2e --passWithNoTests",
+    "check:fast": "pnpm typecheck && pnpm lint && gitleaks detect --redact --no-banner && scripts/floor-guard.sh",
+    "check:task": "pnpm check:fast && pnpm test --coverage && depcruise --validate",
+    "check:full": "pnpm check:task && pnpm test:pg && pnpm test:e2e && semgrep scan --config p/default --config p/typescript --error && osv-scanner scan source -r .",
+    "check:arch": "depcruise . --validate"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^5.0.3",

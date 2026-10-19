@@ -1,4 +1,7 @@
-import { joinCmd, joinPosix, quoteCmd, quotePosix } from './quote.js';
+// cmd.exe text is pre-escaped (caret layers) and relies on windowsVerbatimArguments, which only works when Node is
+// itself a native Windows process. On WSL, Node is a Linux process: WSL interop re-quotes any argument containing a
+// space or `"` before cmd.exe sees it, garbling that text. So wsl uses wt.exe only; there is no cmd.exe fallback there.
+import { joinCmd, joinPosix, quotePosix } from './quote.js';
 import type { LaunchEnv, LaunchPlan, Platform, TerminalRequest } from './types.js';
 
 const KEEP_TAIL = '; printf "\\n[loopwork exited — press Enter to close]"; read _';
@@ -33,13 +36,7 @@ export function planTerminal(req: TerminalRequest, env: LaunchEnv): LaunchPlan |
   // Each builder lists [program, args] in documented order; unavailable programs are filtered out below.
   const wsl = ['wsl.exe', ...(cwd === undefined ? [] : ['--cd', cwd]), '--exec', ...payload(false)];
   const table: Record<Platform, () => [string, string[]][]> = {
-    wsl: () =>
-      has('wsl.exe')
-        ? [
-            ['wt.exe', ['-w', 'new', '--title', title, ...wsl].map(wtEscape)],
-            ['cmd.exe', ['/c', 'start', ...wsl.map(quoteCmd)]],
-          ]
-        : [],
+    wsl: () => (has('wsl.exe') ? [['wt.exe', ['-w', 'new', '--title', title, ...wsl].map(wtEscape)]] : []),
     win32: () => [
       wt(cwd === undefined ? [] : ['-d', cwd]),
       // The outer cmd strips one caret layer, then the started cmd.exe itself reads the line (no argv parsing, so no
