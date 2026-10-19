@@ -21,6 +21,8 @@ export function createRecorder(o: {
   maxMs: number;
   /** Called exactly once, on the first SeqConflictError. */
   onFenced: () => void;
+  /** Called exactly once, on the first non-conflict store error (which flush()/close() then rethrow). */
+  onError?: (error: unknown) => void;
 }): Recorder {
   let buffer: NewEvent[] = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -38,6 +40,7 @@ export function createRecorder(o: {
     } catch (error) {
       if (!(error instanceof SeqConflictError)) {
         failed = { error };
+        o.onError?.(error);
         throw error;
       }
       fenced = true;

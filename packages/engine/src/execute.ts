@@ -13,6 +13,7 @@ export type ExecuteOptions = {
   signal: AbortSignal;
   workerId: string;
   expectedSeq: number;
+  // ponytail: unused until slice 6 (D9). Ceiling: a step that ignores its signal blocks the return; upgrade: race the pool with a cancelGraceMs timer.
   cancelGraceMs?: number;
   channelCapacity?: number;
   maxInFlight?: number;
@@ -82,6 +83,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<RunOutcome> {
     maxEvents: opts.flush?.maxEvents ?? 500,
     maxMs: opts.flush?.maxMs ?? 50,
     onFenced: () => stop({ status: 'fenced' }),
+    onError: (e) => stop({ status: 'failed', reason: 'internal', message: e instanceof Error ? e.message : String(e) }), // executeRun still rejects with it
   });
   /** Step-level events are dropped once the outcome is decided (a pending continuation must not log after stop). */
   const emit = (e: NewEvent): void => {
@@ -184,23 +186,38 @@ export async function executeRun(opts: ExecuteOptions): Promise<RunOutcome> {
           signal: ctrl.signal,
           handle: async ({ itemId, value }) => {
             emit({ type: 'StepStarted', node: id, itemId, attempt: 1 });
-            if (n.kind === 'sink') {
-              await fnOf('sink', n.fn)(value, makeCtx(id, itemId), n.params);
-              return async () => {
-                await rec.flush(); // D4: nothing is reported done before the sink's side effects are durable
-                emit({ type: 'StepSucceeded', node: id, itemId, outputs: [] });
-              };
-            }
-            const result = await fnOf('map', n.fn)(value, makeCtx(id, itemId), n.params);
-            return async () => {
-              const values = Array.isArray(result) ? result : [result];
-              const outputs = values.map((v, k) => ({ port: 'out', itemId: `${itemId}>${id}.out#${k}`, value: v }));
-              emit({ type: 'StepSucceeded', node: id, itemId, outputs });
-              for (const o of outputs) {
-                if (ctrl.signal.aborted) return;
-                await sendTo(id, { itemId: o.itemId, value: o.value });
+            const ctx = makeCtx(id, itemId);
+            try {
+              if (n.kind === 'sink') {
+                await fnOf('sink', n.fn)(value, ctx, n.params);
+                return async () => {
+                  await rec.flush(); // D4: nothing is reported done before the sink's side effects are durable
+                  emit({ type: 'StepSucceeded', node: id, itemId, outputs: [] });
+                };
               }
-            };
+              const result = await fnOf('map', n.fn)(value, ctx, n.params);
+              return async () => {
+                const values = Array.isArray(result) ? result : [result];
+                const outputs = values.map((v, k) => ({ port: 'out', itemId: `${itemId}>${id}.out#${k}`, value: v }));
+                emit({ type: 'StepSucceeded', node: id, itemId, outputs });
+                for (const o of outputs) {
+                  if (ctrl.signal.aborted) return;
+                  await sendTo(id, { itemId: o.itemId, value: o.value });
+                }
+              };
+            } catch (err) {
+              // Stop here, not via the pool's rejection, so siblings' signals abort at once; emit drops after stop.
+              const error = err instanceof Error ? err : new Error(String(err));
+              emit({
+                type: 'StepFailed',
+                node: id,
+                itemId,
+                attempt: ctx.attempt,
+                error: { name: error.name, message: error.message, ...(error.stack !== undefined && { stack: error.stack }) },
+                willRetry: false,
+              });
+              stop({ status: 'failed', reason: 'step', node: id, message: error.message });
+            }
           },
         }).then(() => release(id)),
       );

@@ -7,7 +7,7 @@ import { createRecorder } from '../src/recorder.js';
 const flow = { version: 1, id: 'f', name: 'F', nodes: {}, edges: [] } as Flow;
 const ev = (count: number): NewEvent => ({ type: 'SourceCompleted', node: 'n', count });
 
-async function setup(opts: { maxEvents?: number; maxMs?: number } = {}) {
+async function setup(opts: { maxEvents?: number; maxMs?: number; onError?: (error: unknown) => void } = {}) {
   const store = new MemoryStore();
   await store.create('r', { type: 'RunCreated', flow, createdBy: 'cli' });
   const onFenced = vi.fn();
@@ -135,6 +135,22 @@ describe('recorder', () => {
     expect((await read()).map((e) => e.seq)).toEqual([1]);
     expect(rec.fenced).toBe(false);
     expect(onFenced).not.toHaveBeenCalled();
+  });
+
+  it('recorder: onError is called exactly once, synchronously with the failure, before flush() rejects', async () => {
+    const onError = vi.fn();
+    const { store, rec } = await setup({ onError });
+    vi.spyOn(store, 'append').mockRejectedValue(new Error('db down'));
+
+    rec.push(ev(1));
+    await rec.flush().then(
+      () => expect.unreachable('flush must reject'),
+      () => expect(onError).toHaveBeenCalledTimes(1), // already called by the time the rejection is observed
+    );
+    await expect(rec.flush()).rejects.toThrow('db down');
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(new Error('db down'));
   });
 
   it('recorder: close() flushes, then ignores later pushes', async () => {
