@@ -10,6 +10,9 @@ terminal window and a GUI window), or from Claude Desktop (MCP).
 
 See [docs/PLAN.md](docs/PLAN.md), [CAPABILITY-MAP.md](CAPABILITY-MAP.md) and [docs/adr/](docs/adr/).
 
+`packages/engine` (`@loopwork/engine`) is the in-process executor over `@loopwork/graph` and `@loopwork/eventlog`: plain
+source→map→sink flows with backpressure, concurrency limits and fencing. Frames, resume and Postgres land in later slices.
+
 ## Local checks
 
 Use Node 22 (`nvm use 22`; `package.json` requires `>=22`) with pnpm 12 (`corepack enable`, then `pnpm install`). Put the

@@ -30,9 +30,9 @@ packages/engine/
   src/builtins.ts       createBuiltins(): NodeRegistry
   src/channel.ts        bounded async channel (backpressure)
   src/scheduler.ts      per-node worker pool, global in-flight cap
-  src/frames/{foreach,while,retry}.ts
+  src/frames/{foreach,while,retry}.ts   (slice 3-5)
   src/recorder.ts       batching event writer (flush by count/time)
-  src/resume.ts         derives work to redo from RunState
+  src/resume.ts         derives work to redo from RunState   (slice 3-5)
   test/
 ```
 
@@ -45,6 +45,7 @@ type NodeRegistry = {
   sink(name: string, fn: SinkFn): void;           // (item, ctx, params) => Promise<void>
   predicate(name: string, fn: PredicateFn): void; // (state, ctx, params) => Promise<boolean>   for while/until conditions
   has(kind, name): boolean;  names(kind): string[];
+  get<K extends NodeKind>(kind: K, name: string): FnByKind[K] | undefined;   // FnByKind: source→SourceFn, map→MapFn, sink→SinkFn, predicate→PredicateFn
 };
 type StepContext = {
   runId: string; node: string; itemId: string; attempt: number; signal: AbortSignal;
@@ -83,6 +84,7 @@ Needed by tests, the exit gate, the GUI's demo flows and `loopwork init`'s sampl
 slow sink stalls the source instead of buffering unboundedly. Every `map`/`sink` node runs up to `concurrency`
 steps at once (default 1), and all nodes together never exceed `maxInFlight`. Output order is **completion
 order**, not input order; lineage is carried in `itemId`. Engine memory is O(channels + in-flight), independent of item count (the store and the resume fold are excluded).
+A step's `fn` holds the global `maxInFlight` permit; outbound sends (which may block on a full channel) and the sink flush run after the permit is released. Source and map outputs are write-ahead: logged (`ItemEmitted` / `StepSucceeded{outputs}`) first, then delivered downstream.
 
 **Steps.** `StepStarted` → call `fn` → `StepSucceeded{outputs}` or `StepFailed`. A step is *committed* only when its
 `StepSucceeded` is flushed to the store. Anything not in the log is treated as not done.
@@ -148,7 +150,7 @@ calling `executeRun` again on the same store. `*.pg.test.ts`: one smoke test per
 ## Success Criteria
 
 - **EC-1** A `source → map → sink` flow processes N items; `StepSucceeded` count equals N for each node; run `succeeded`.
-- **EC-2** Backpressure: with a sink slower than the source, the source's emitted-minus-consumed gap never exceeds `channelCapacity + concurrency`; a 100k-item run against a discarding test store completes with `--max-old-space-size=256`.
+- **EC-2** Backpressure: with a sink slower than the source, the source's emitted-minus-consumed gap never exceeds `channelCapacity + concurrency + 1` (the +1 is the write-ahead item the source has logged and parked on a full channel); a 100k-item run against a discarding test store completes with `--max-old-space-size=256`.
 - **EC-3** Concurrency: a node with `concurrency: k` never has more than `k` steps in flight, and reaches `k` when work is available; `maxInFlight` caps the total across nodes.
 - **EC-4** `foreach` runs one iteration per input item with the configured body concurrency, and `FrameEntered`/`FrameExited{input-done}` are emitted once per input item.
 - **EC-5** `while`/`until` iterate to the condition and emit the final state; `until` always runs the body at least once, `while` may run it zero times.

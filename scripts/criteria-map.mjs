@@ -10,7 +10,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const range = (prefix, n) => Array.from({ length: n }, (_, i) => `${prefix}-${i + 1}`);
-export const EXPECTED_IDS = [...range('SC', 7), ...range('GM', 9), ...range('WL', 8), ...range('EL', 10)];
+// Engine-core ids are listed literally: EC-4..EC-8, EC-10..EC-13 and EC-15 land in later slices, each appending its own.
+export const EXPECTED_IDS = [
+  ...range('SC', 7),
+  ...range('GM', 9),
+  ...range('WL', 8),
+  ...range('EL', 10),
+  'EC-1',
+  'EC-2',
+  'EC-3',
+  'EC-9',
+  'EC-14',
+];
 
 const counts = (file) => /(\.test\.ts|(^|[\\/])store-contract\.ts)$/.test(file) && !/criteria-map\.test\.ts$/.test(file);
 
