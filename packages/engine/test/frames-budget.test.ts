@@ -2,7 +2,7 @@ import { MemoryStore, foldRun, type LoopworkEvent } from '@loopwork/eventlog';
 import type { Flow, Frame } from '@loopwork/graph';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createBuiltins, executeRun, type NodeRegistry, type RunOutcome } from '../src/index.js';
-import { eventsOf, foreachFrame, frameFlow, startRun } from './helpers.js';
+import { eventsOf, foreachFrame, frameFlow, retryFrame, startRun } from './helpers.js';
 
 const withBudget = (frame: Frame, maxDurationMs: number): Frame => ({ ...frame, budgets: { ...frame.budgets, maxDurationMs } });
 const tick = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve)); // setImmediate is not faked below
@@ -66,6 +66,40 @@ describe('frame time budget', () => {
     await until(() => aborted.length > 0);
     expect(aborted).toEqual([true]);
     expect(foldRun(events).frames.get('F')?.active.get('src.out#0')?.breached).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('EC-7: a retry frame exceeding maxDurationMs ends failed budget and aborts its step signal', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const aborted: boolean[] = [];
+    let started = false;
+    const registry = createBuiltins();
+    registry.map('stall', async (item, ctx) => {
+      started = true;
+      await untilAborted(ctx.signal);
+      aborted.push(ctx.signal.aborted);
+      return item;
+    });
+    const frame = retryFrame({ maxAttempts: 1, backoff: { kind: 'fixed', baseMs: 5 }, nodes: { b: { kind: 'map', fn: 'stall', in: {}, out: {} } } });
+    const run = await start(frameFlow(withBudget(frame, 1000)), registry);
+    try {
+      await until(() => started);
+      await vi.advanceTimersByTimeAsync(999);
+      await tick();
+      expect(run.outcome()).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      await until(() => run.outcome() !== undefined);
+    } finally {
+      run.stop();
+    }
+
+    expect(run.outcome()).toMatchObject({ status: 'failed', reason: 'budget', node: 'F' });
+    const events = await run.events();
+    const at = events.findIndex((e) => e.type === 'BudgetExceeded');
+    expect(events[at]).toMatchObject({ node: 'F', itemId: 'src.out#0', budget: 'time', limit: 1000 });
+    expect(events.slice(at + 1)).toMatchObject([{ type: 'RunFailed', reason: 'budget', node: 'F' }]);
+    await until(() => aborted.length > 0);
+    expect(aborted).toEqual([true]);
     expect(vi.getTimerCount()).toBe(0);
   });
 

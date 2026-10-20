@@ -1,7 +1,7 @@
 import { MemoryStore, foldRun, type LoopworkEvent } from '@loopwork/eventlog';
-import { flow } from '@loopwork/graph';
+import { flow, type Flow } from '@loopwork/graph';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createBuiltins, executeRun } from '../src/index.js';
+import { createBuiltins, executeRun, type NodeRegistry } from '../src/index.js';
 import { backoffMs, sleep } from '../src/frames.js';
 import { eventsOf, retryFrame, startRun } from './helpers.js';
 
@@ -323,6 +323,71 @@ describe('frames: retry primitives', () => {
       expect(state.frames.get('F')?.exitedCount).toBe(2);
       expect(state.frames.get('F')?.active.size).toBe(0);
       expect(state.nodes.get('F.b')?.inFlight.size).toBe(0);
+    });
+
+    /** Runs `def` to its outcome with a hang guard (maxAttempts 1 everywhere, so no backoff timer is ever needed). */
+    async function settle(def: Flow, registry: NodeRegistry) {
+      const { store } = setup();
+      const { expectedSeq } = await startRun(store, 'r', def);
+      let outcome: unknown;
+      void executeRun({ runId: 'r', store, registry, signal: new AbortController().signal, workerId: 'w1', expectedSeq }).then((o) => (outcome = o));
+      await until(() => outcome !== undefined);
+      return { outcome, events: await eventsOf(store, 'r') };
+    }
+
+    it('EC-8: with several body steps failing in one instance, the first failure message is the one the error item carries', async () => {
+      const registry = createBuiltins();
+      registry.map('fan', async () => [1, 2]);
+      registry.map('failing', async (item) => {
+        throw new Error(`boom ${String(item)}`);
+      });
+      const def = flow('f', 'F')
+        .source('src', { fn: 'range', params: { count: 1 }, out: ANY })
+        .frame(
+          'F',
+          retryFrame({
+            maxAttempts: 1,
+            backoff: fixed,
+            onExhausted: 'emit-error',
+            nodes: { b: { kind: 'map', fn: 'fan', in: ANY, out: ANY }, c: { kind: 'map', fn: 'failing', in: ANY, out: ANY } },
+            edges: [{ from: { node: 'b', port: 'out' }, to: { node: 'c', port: 'in' } }],
+            exit: 'c',
+          }),
+        )
+        .sink('snk', { fn: 'discard', in: ANY })
+        .sink('errSnk', { fn: 'discard', in: ANY })
+        .edge('src.out', 'F.in')
+        .edge('F.out', 'snk.in')
+        .edge('F.error', 'errSnk.in')
+        .build();
+      const { outcome, events } = await settle(def, registry);
+      expect(outcome).toEqual({ status: 'succeeded' });
+      expect(events.filter((e) => e.type === 'StepFailed').map((e) => e.type === 'StepFailed' && e.error.message)).toEqual(['boom 1', 'boom 2']);
+      const exited = events.filter((e) => e.type === 'FrameExited');
+      expect(exited).toHaveLength(1);
+      expect(exited[0]).toMatchObject({ reason: 'retries-exhausted', outputs: [{ port: 'error', value: { message: 'boom 1', item: 0 } }] });
+    });
+
+    it('EC-8: a nested retry frame applies its own policy: an inner fail-run overrides the outer emit-error', async () => {
+      const registry = createBuiltins();
+      registry.map('failing', async () => {
+        throw new Error('inner always fails');
+      });
+      const inner = retryFrame({ maxAttempts: 1, backoff: fixed, onExhausted: 'fail-run', nodes: { ...failingB } });
+      const def = flow('f', 'F')
+        .source('src', { fn: 'range', params: { count: 1 }, out: ANY })
+        .frame('F', retryFrame({ maxAttempts: 1, backoff: fixed, onExhausted: 'emit-error', nodes: { b: inner } }))
+        .sink('snk', { fn: 'discard', in: ANY })
+        .sink('errSnk', { fn: 'discard', in: ANY })
+        .edge('src.out', 'F.in')
+        .edge('F.out', 'snk.in')
+        .edge('F.error', 'errSnk.in')
+        .build();
+      const { outcome, events } = await settle(def, registry);
+      expect(outcome).toEqual({ status: 'failed', reason: 'step', node: 'F.b.b', message: 'inner always fails' });
+      expect(events.at(-1)).toMatchObject({ type: 'RunFailed', reason: 'step', node: 'F.b.b' });
+      expect(events.filter((e) => e.type === 'FrameExited' && e.reason === 'retries-exhausted')).toEqual([]);
+      expect(vi.getTimerCount()).toBe(0);
     });
   });
 });
