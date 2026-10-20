@@ -32,6 +32,23 @@ export function createLimiter(max: number): Limiter {
   };
 }
 
+/** Limiter that acquires `first` then `then` (a waiter parks on `first`) and releases in reverse; `inFlight` is `then`'s. */
+export function chain(first: Limiter, then: Limiter): Limiter {
+  return {
+    get inFlight() {
+      return then.inFlight;
+    },
+    async acquire() {
+      await first.acquire();
+      await then.acquire();
+    },
+    release() {
+      then.release();
+      first.release();
+    },
+  };
+}
+
 /** Acquire a permit, run `handle(item)`, always release; resolves undefined without running if `signal` aborted after the acquire. */
 export async function runHeld<T, R>(
   limiter: Limiter,
