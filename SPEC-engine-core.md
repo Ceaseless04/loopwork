@@ -35,7 +35,7 @@ packages/engine/
   src/frames.ts         frame-instance runner + retry/backoff primitives (foreach, retry)
   src/loops.ts          while/until instance runner (condition, iterations, iteration budget)
   src/recorder.ts       batching event writer (flush by count/time)
-  src/resume.ts         derives work to redo from RunState   (slice 3-5)
+  src/resume.ts         derives work to redo from RunState   (slice 5)
   test/
 ```
 
