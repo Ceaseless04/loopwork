@@ -45,7 +45,7 @@ export type Instance = {
   exhausted?: { message: string };
 };
 /** What a frame instance needs from the run: the recorder, the gated `emit` and the abort signal. */
-export type FrameHost = { rec: Recorder; emit(e: NewEvent): void; signal: AbortSignal; send(port: string, item: Item): Promise<void> };
+export type FrameHost = { rec: Recorder; emit(e: NewEvent): void; signal: AbortSignal; send(port: string, item: Item): Promise<void>; fail(reason: 'budget', message: string, node: string): void };
 
 /** Engine-clock duration for IterationEnded.elapsedMs: bookkeeping that is never replayed, so reading the clock here is allowed. */
 const elapsed = (t0: number): number => Date.now() - t0;
@@ -60,6 +60,7 @@ export async function runInstance(
   item: Item,
   runBody: (inst: Instance) => Promise<void>,
   iteration = 1,
+  loggedElapsedMs = 0, // time already spent before a resume, so the time budget keeps counting across restarts
 ): Promise<void> {
   await h.rec.ready();
   if (h.signal.aborted) return;
@@ -69,6 +70,13 @@ export async function runInstance(
     const t0 = Date.now();
     h.emit({ type: 'FrameEntered', node: f.id, itemId: inst.itemId, frame: f.node.frame });
     h.emit({ type: 'IterationStarted', node: f.id, itemId: inst.itemId, iteration });
+    const limit = f.node.budgets.maxDurationMs;
+    // Log-then-stop in one tick: BudgetExceeded is emitted before fail() aborts the run (emit drops after the abort).
+    inst.timer = setTimeout(() => {
+      if (h.signal.aborted) return;
+      h.emit({ type: 'BudgetExceeded', node: f.id, itemId: inst.itemId, budget: 'time', limit, used: elapsed(t0) });
+      h.fail('budget', `frame "${f.id}" exceeded its time budget (maxDurationMs=${limit})`, f.id);
+    }, limit - loggedElapsedMs);
     await runBody(inst);
     if (h.signal.aborted) return;
     inst.elapsedMs = elapsed(t0);
@@ -81,6 +89,7 @@ export async function runInstance(
     }
     h.emit({ type: 'FrameExited', node: f.id, itemId: inst.itemId, reason: f.node.frame === 'retry' ? 'success' : 'input-done' });
   } finally {
+    clearTimeout(inst.timer);
     f.instances.delete(inst.itemId);
   }
 }

@@ -241,7 +241,7 @@ export function createRunScope(env: ScopeEnv): (o: ScopeOpts) => Scope {
             concurrency,
             limiter: nodeLimiterOf(sid, concurrency), // the instance holds only the frame's permit, never a global one
             signal,
-            handle: (item) => runInstance({ rec, emit, signal, send: (port, it) => sendTo(`${sid}.${port}`, it) }, { id: sid, node: n, instances }, item, runBody),
+            handle: (item) => runInstance({ rec, emit, signal, fail: env.fail, send: (port, it) => sendTo(`${sid}.${port}`, it) }, { id: sid, node: n, instances }, item, runBody),
           }).then(() => releaseOutputs(sid)),
         );
       }
