@@ -59,10 +59,10 @@ describe('findUnmappedCriteria', () => {
 describe('criteria map of the repository', () => {
   it('expects SC-1..7, GM-1..9, WL-1..8 and EL-1..10', async () => {
     const { EXPECTED_IDS } = await load();
-    expect(EXPECTED_IDS).toHaveLength(39);
+    expect(EXPECTED_IDS).toHaveLength(42);
     expect(EXPECTED_IDS).toContain('SC-7');
     expect(EXPECTED_IDS).toContain('EL-10');
-    for (const id of ['EC-1', 'EC-2', 'EC-3', 'EC-9', 'EC-14']) expect(EXPECTED_IDS).toContain(id);
+    for (const id of ['EC-1', 'EC-2', 'EC-3', 'EC-4', 'EC-7', 'EC-8', 'EC-9', 'EC-14']) expect(EXPECTED_IDS).toContain(id);
   });
 
   it('has a named test for every criterion ID', async () => {

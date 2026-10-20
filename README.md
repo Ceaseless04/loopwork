@@ -11,7 +11,7 @@ terminal window and a GUI window), or from Claude Desktop (MCP).
 See [docs/PLAN.md](docs/PLAN.md), [CAPABILITY-MAP.md](CAPABILITY-MAP.md) and [docs/adr/](docs/adr/).
 
 `packages/engine` (`@loopwork/engine`) is the in-process executor over `@loopwork/graph` and `@loopwork/eventlog`: plain
-source→map→sink flows with backpressure, concurrency limits and fencing. Frames, resume and Postgres land in later slices.
+source→map→sink flows with backpressure, concurrency limits and fencing, plus `foreach` and `retry` frames (backoff, `emit-error`) with per-frame time budgets. `while`/`until`, resume and Postgres land in later slices.
 
 ## Local checks
 
