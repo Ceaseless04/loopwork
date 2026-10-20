@@ -1,15 +1,22 @@
 import { MemoryStore, foldRun, type LoopworkEvent } from '@loopwork/eventlog';
-import type { Flow, JsonValue } from '@loopwork/graph';
+import { flow, type Flow, type JsonValue } from '@loopwork/graph';
 import { describe, expect, it } from 'vitest';
 import { createBuiltins, executeRun } from '../src/index.js';
 import { eventsOf, foreachFrame, frameFlow, startRun } from './helpers.js';
 
 const ANY = {};
 
-async function exec(def: Flow, registry = createBuiltins()) {
+async function exec(def: Flow, registry = createBuiltins(), opts: { maxInFlight?: number; guardMs?: number } = {}) {
   const store = new MemoryStore();
   const { expectedSeq } = await startRun(store, 'r', def);
-  const outcome = await executeRun({ runId: 'r', store, registry, signal: new AbortController().signal, workerId: 'w1', expectedSeq });
+  const run = executeRun({ runId: 'r', store, registry, signal: new AbortController().signal, workerId: 'w1', expectedSeq, ...(opts.maxInFlight !== undefined && { maxInFlight: opts.maxInFlight }) });
+  // A deadlocked run never settles: with a guard it fails fast as `hung` instead of waiting for the test timeout.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const hung = new Promise<{ status: 'hung' }>((resolve) => {
+    if (opts.guardMs !== undefined) timer = setTimeout(() => resolve({ status: 'hung' }), opts.guardMs);
+  });
+  const outcome = await Promise.race([run, hung]);
+  clearTimeout(timer);
   return { outcome, events: await eventsOf(store, 'r') };
 }
 
@@ -139,5 +146,59 @@ describe('foreach frames', () => {
 
     const plain = await exec(frameFlow(foreachFrame({ concurrency: 1 }), 2));
     expect(plain.outcome).toEqual({ status: 'succeeded' });
+  });
+
+  it('frames: the foreach pool uses its own limiter, so instances never hold global permits the body steps need', async () => {
+    // maxInFlight equals the frame concurrency, and every body step waits until all three run at once: were instances charged
+    // to the global limiter, the permits would be gone before the third body step could start.
+    let running = 0;
+    let release!: () => void;
+    const all = new Promise<void>((resolve) => (release = resolve));
+    const registry = createBuiltins();
+    registry.map('together', async (item) => {
+      if (++running === 3) release();
+      await all;
+      return item;
+    });
+    const { outcome } = await exec(frameFlow(foreachFrame({ concurrency: 3, fn: 'together' }), 3), registry, { maxInFlight: 3, guardMs: 1000 });
+    expect(outcome).toEqual({ status: 'succeeded' });
+  });
+
+  it('frames: a body step waits on its node limiter before taking a global permit (waiters hold no global slot)', async () => {
+    const ticks = async (n: number): Promise<void> => {
+      for (let i = 0; i < n; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+    };
+    let bStarted!: () => void;
+    const started = new Promise<void>((resolve) => (bStarted = resolve));
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    const registry = createBuiltins();
+    registry.map('gated', async (item) => {
+      bStarted();
+      await gate;
+      return item;
+    });
+    // `late` yields once b#0 is running and the other instances have had time to queue, so `side` needs a global permit only then.
+    registry.source('late', async function* () {
+      await started;
+      await ticks(10);
+      yield 1;
+    });
+    registry.sink('open', async () => open());
+    const body = { b: { kind: 'map' as const, fn: 'gated', in: ANY, out: ANY, concurrency: 1 } };
+    const def = flow('f', 'F')
+      .source('src', { fn: 'range', params: { count: 3 }, out: ANY })
+      .frame('F', foreachFrame({ concurrency: 3, nodes: body }))
+      .sink('snk', { fn: 'discard', in: ANY })
+      .source('src2', { fn: 'late', out: ANY })
+      .sink('side', { fn: 'open', in: ANY })
+      .edge('src.out', 'F.in')
+      .edge('F.out', 'snk.in')
+      .edge('src2.out', 'side.in')
+      .build();
+
+    // b#0 holds the node permit and one of two global permits; b#1, b#2 queue on the node limiter only, leaving `side` a global permit.
+    const { outcome } = await exec(def, registry, { maxInFlight: 2, guardMs: 1000 });
+    expect(outcome).toEqual({ status: 'succeeded' });
   });
 });
