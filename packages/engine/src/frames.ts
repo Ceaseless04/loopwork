@@ -4,6 +4,8 @@ import type { Recorder } from './recorder.js';
 import type { Item } from './registry.js';
 
 type Backoff = Extract<Frame, { frame: 'retry' }>['backoff'];
+/** The nearest enclosing retry frame's policy, passed down to every body step (including inside nested foreach bodies). */
+export type RetryScope = { maxAttempts: number; backoff: Backoff };
 
 const MAX_BACKOFF_MS = 60_000;
 
@@ -44,7 +46,7 @@ export type FrameHost = { rec: Recorder; emit(e: NewEvent): void; signal: AbortS
 const elapsed = (t0: number): number => Date.now() - t0;
 
 /**
- * Lifecycle of one foreach instance (write-ahead: every event is logged before its effect). `runBody` enters the
+ * Lifecycle of one foreach or retry instance (write-ahead: every event is logged before its effect). `runBody` enters the
  * body and resolves when its pools have drained. A stopped run starts and finishes nothing.
  */
 export async function runInstance(
@@ -66,7 +68,7 @@ export async function runInstance(
     if (h.signal.aborted) return;
     inst.elapsedMs = elapsed(t0);
     h.emit({ type: 'IterationEnded', node: f.id, itemId: inst.itemId, iteration, elapsedMs: inst.elapsedMs });
-    h.emit({ type: 'FrameExited', node: f.id, itemId: inst.itemId, reason: 'input-done' });
+    h.emit({ type: 'FrameExited', node: f.id, itemId: inst.itemId, reason: f.node.frame === 'retry' ? 'success' : 'input-done' });
   } finally {
     f.instances.delete(inst.itemId);
   }

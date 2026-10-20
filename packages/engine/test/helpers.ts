@@ -1,5 +1,5 @@
 import type { EventStore, LoopworkEvent, MemoryStore } from '@loopwork/eventlog';
-import { flow, type Flow, type FlowNode, type Frame, type JsonValue } from '@loopwork/graph';
+import { flow, type Edge, type Flow, type FlowNode, type Frame, type JsonValue } from '@loopwork/graph';
 
 const any = {};
 
@@ -52,6 +52,35 @@ export function foreachFrame(o: { concurrency: number; fn?: string; nodes?: Reco
     },
     budgets: { maxIterations: 1, maxDurationMs: 600_000 },
     concurrency: o.concurrency,
+    in: any,
+    out: any,
+  };
+}
+
+type RetryFrame = Extract<Frame, { frame: 'retry' }>;
+
+/** A retry frame whose body is `nodes` (default: one map `b`, identity; entry `b.in`, exit `<exit>.out`, default `b`). */
+export function retryFrame(o: {
+  maxAttempts: number;
+  backoff: RetryFrame['backoff'];
+  onExhausted?: RetryFrame['onExhausted'];
+  nodes?: Record<string, FlowNode>;
+  edges?: Edge[];
+  exit?: string;
+}): Frame {
+  return {
+    kind: 'frame',
+    frame: 'retry',
+    body: {
+      nodes: o.nodes ?? { b: { kind: 'map', fn: 'identity', in: any, out: any } },
+      edges: o.edges ?? [],
+      entry: { node: 'b', port: 'in' },
+      exit: { node: o.exit ?? 'b', port: 'out' },
+    },
+    budgets: { maxIterations: 1, maxDurationMs: 3_600_000 },
+    maxAttempts: o.maxAttempts,
+    backoff: o.backoff,
+    onExhausted: o.onExhausted ?? 'fail-run',
     in: any,
     out: any,
   };
