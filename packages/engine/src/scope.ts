@@ -180,7 +180,10 @@ export function createRunScope(env: ScopeEnv): (o: ScopeOpts) => Scope {
               error: { name: error.name, message: error.message, ...(error.stack !== undefined && { stack: error.stack }) },
               willRetry,
             });
-            if (!willRetry) return env.fail('step', error.message, sid);
+            if (!willRetry) {
+              if (retry?.exhaust) return retry.exhaust(error.message); // emit-error: siblings keep draining, the instance exits retries-exhausted
+              return env.fail('step', error.message, sid);
+            }
             return async () => {
               try {
                 await sleep(backoffMs(retry.backoff, attempt), signal); // holds no permit: continuations run after release
@@ -204,11 +207,18 @@ export function createRunScope(env: ScopeEnv): (o: ScopeOpts) => Scope {
         );
       } else if (n.frame === 'foreach' || n.frame === 'retry') {
         const concurrency = n.frame === 'foreach' ? n.concurrency : 1; // retry instances run one at a time
-        const bodyRetry = n.frame === 'retry' ? { maxAttempts: n.maxAttempts, backoff: n.backoff } : retry;
         const instances = new Map<string, Instance>();
         const entryPort = `${sid}.${n.body.entry.node}.${n.body.entry.port}`;
         const runBody = async (inst: Instance): Promise<void> => {
           if (signal.aborted) return;
+          const bodyRetry: RetryScope | undefined =
+            n.frame === 'retry'
+              ? {
+                  maxAttempts: n.maxAttempts,
+                  backoff: n.backoff,
+                  ...(n.onExhausted === 'emit-error' && { exhaust: (message: string) => void (inst.exhausted ??= { message }) }),
+                }
+              : retry;
           const sub = runScope({
             nodes: n.body.nodes,
             edges: n.body.edges,
@@ -231,7 +241,7 @@ export function createRunScope(env: ScopeEnv): (o: ScopeOpts) => Scope {
             concurrency,
             limiter: nodeLimiterOf(sid, concurrency), // the instance holds only the frame's permit, never a global one
             signal,
-            handle: (item) => runInstance({ rec, emit, signal }, { id: sid, node: n, instances }, item, runBody),
+            handle: (item) => runInstance({ rec, emit, signal, send: (port, it) => sendTo(`${sid}.${port}`, it) }, { id: sid, node: n, instances }, item, runBody),
           }).then(() => releaseOutputs(sid)),
         );
       }

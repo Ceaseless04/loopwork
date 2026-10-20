@@ -180,4 +180,149 @@ describe('frames: retry primitives', () => {
     const sunk = events.flatMap((e) => (e.type === 'StepStarted' && e.node === 'snk' ? [e.itemId] : []));
     expect(sunk.sort()).toEqual([`${B0}>F.c.out#0`, `${B1}>F.c.out#0`]);
   });
+
+  describe('exhaustion', () => {
+    const fixed = { kind: 'fixed', baseMs: 1000 } as const;
+    const failingB = { b: { kind: 'map', fn: 'failing', in: ANY, out: ANY } } as const;
+
+    /** Fake timers; `delays` are the retry backoff timers armed (budget timers are >= 3_600_000 and excluded). */
+    function setup(): { delays: () => number[]; store: MemoryStore } {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const timeouts = vi.spyOn(globalThis, 'setTimeout');
+      return {
+        store: new MemoryStore(),
+        delays: () => timeouts.mock.calls.flatMap(([, ms]) => (typeof ms === 'number' && ms >= 1000 && ms < 3_600_000 ? [ms] : [])),
+      };
+    }
+
+    it('EC-8: retry exhaustion with fail-run fails the run with reason step', async () => {
+      const { store, delays } = setup();
+      const registry = createBuiltins();
+      registry.map('failing', async () => {
+        throw new Error('always fails');
+      });
+      const def = flow('f', 'F')
+        .source('src', { fn: 'range', params: { count: 1 }, out: ANY })
+        .frame('F', retryFrame({ maxAttempts: 2, backoff: fixed, onExhausted: 'fail-run', nodes: { ...failingB } }))
+        .sink('snk', { fn: 'discard', in: ANY })
+        .edge('src.out', 'F.in')
+        .edge('F.out', 'snk.in')
+        .build();
+      const { expectedSeq } = await startRun(store, 'r', def);
+      const run = executeRun({ runId: 'r', store, registry, signal: new AbortController().signal, workerId: 'w1', expectedSeq });
+
+      await until(() => delays().length === 1);
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(run).resolves.toEqual({ status: 'failed', reason: 'step', node: 'F.b', message: 'always fails' });
+
+      expect(delays()).toEqual([1000]);
+      expect(vi.getTimerCount()).toBe(0);
+      const events = await eventsOf(store, 'r');
+      const steps = events.filter((e) => e.type === 'StepFailed').map((e) => e.type === 'StepFailed' && [e.node, e.attempt, e.willRetry]);
+      expect(steps).toEqual([
+        ['F.b', 1, true],
+        ['F.b', 2, false],
+      ]);
+      expect(events.at(-1)).toMatchObject({ type: 'RunFailed', reason: 'step', node: 'F.b' });
+      expect(events.filter((e) => e.type === 'RunFailed')).toHaveLength(1);
+      expect(events.findIndex((e) => e.type === 'StepFailed' && !e.willRetry)).toBe(events.length - 2);
+      expect(events.some((e) => e.type === 'FrameExited')).toBe(false);
+    });
+
+    it('EC-8: retry exhaustion with emit-error logs FrameExited retries-exhausted with an error item, sends it on error and lets the run continue', async () => {
+      const { store, delays } = setup();
+      const attempts: Record<string, number> = {};
+      const okSeen: { itemId: string; value: unknown }[] = [];
+      const errSeen: { itemId: string; value: unknown }[] = [];
+      const registry = createBuiltins();
+      registry.map('failing', async (item, ctx) => {
+        if (item !== 0) return item;
+        const n = (attempts[ctx.itemId] = (attempts[ctx.itemId] ?? 0) + 1);
+        throw new Error(`always fails, attempt ${n}`);
+      });
+      registry.sink('okSink', async (item, ctx) => {
+        okSeen.push({ itemId: ctx.itemId, value: item });
+      });
+      registry.sink('errSink', async (item, ctx) => {
+        errSeen.push({ itemId: ctx.itemId, value: item });
+      });
+      const def = flow('f', 'F')
+        .source('src', { fn: 'range', params: { count: 2 }, out: ANY })
+        .frame('F', retryFrame({ maxAttempts: 2, backoff: fixed, onExhausted: 'emit-error', nodes: { ...failingB } }))
+        .sink('okSink', { fn: 'okSink', in: ANY })
+        .sink('errSink', { fn: 'errSink', in: ANY })
+        .edge('src.out', 'F.in')
+        .edge('F.out', 'okSink.in')
+        .edge('F.error', 'errSink.in')
+        .build();
+      const { expectedSeq } = await startRun(store, 'r', def);
+      const run = executeRun({ runId: 'r', store, registry, signal: new AbortController().signal, workerId: 'w1', expectedSeq });
+
+      await until(() => delays().length === 1);
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(run).resolves.toEqual({ status: 'succeeded' });
+      expect(delays()).toEqual([1000]);
+      expect(vi.getTimerCount()).toBe(0);
+
+      const events = await eventsOf(store, 'r');
+      const tag = (e: LoopworkEvent): string => {
+        if (e.type === 'IterationStarted' || e.type === 'IterationEnded') return `${e.type}:${e.node}:${e.iteration}`;
+        if (e.type === 'FrameEntered') return `${e.type}:${e.node}:${e.frame}`;
+        if (e.type === 'FrameExited') return `${e.type}:${e.node}:${e.reason}`;
+        if (e.type === 'StepStarted') return `${e.type}:${e.node}:${e.attempt}`;
+        if (e.type === 'StepFailed') return `${e.type}:${e.node}:${e.attempt}:${e.willRetry}`;
+        return e.type;
+      };
+      const kinds = new Set(['FrameEntered', 'IterationStarted', 'IterationEnded', 'FrameExited', 'StepStarted', 'StepSucceeded', 'StepFailed']);
+      const of = (id: string): LoopworkEvent[] =>
+        events.filter((e) => kinds.has(e.type) && 'itemId' in e && e.itemId.startsWith(id) && 'node' in e && e.node.startsWith('F'));
+
+      const ERR_ID = 'src.out#0>F.error#0';
+      expect(of('src.out#0').map(tag)).toEqual([
+        'FrameEntered:F:retry',
+        'IterationStarted:F:1',
+        'StepStarted:F.b:1',
+        'StepFailed:F.b:1:true',
+        'StepStarted:F.b:2',
+        'StepFailed:F.b:2:false',
+        'IterationEnded:F:1',
+        'FrameExited:F:retries-exhausted',
+      ]);
+      const exited = events.filter((e) => e.type === 'FrameExited');
+      expect(exited[0]).toMatchObject({
+        node: 'F',
+        itemId: 'src.out#0',
+        reason: 'retries-exhausted',
+        outputs: [{ port: 'error', itemId: ERR_ID, value: { message: 'always fails, attempt 2', item: 0 } }],
+      });
+      expect(exited[0]?.type === 'FrameExited' && exited[0].outputs).toHaveLength(1);
+      expect(of('src.out#0').filter((e) => e.type === 'StepSucceeded')).toEqual([]);
+
+      // the error item reaches the error sink only, after the write-ahead FrameExited
+      expect(errSeen).toEqual([{ itemId: ERR_ID, value: { message: 'always fails, attempt 2', item: 0 } }]);
+      expect(okSeen).toEqual([{ itemId: 'src.out#1>F.b.out#0', value: 1 }]);
+      const exitAt = events.findIndex((e) => e.type === 'FrameExited' && e.itemId === 'src.out#0');
+      expect(events.findIndex((e) => e.type === 'StepStarted' && e.node === 'errSink')).toBeGreaterThan(exitAt);
+
+      // item 1 is a clean success, one at a time after item 0's exit
+      expect(of('src.out#1').map(tag)).toEqual([
+        'FrameEntered:F:retry',
+        'IterationStarted:F:1',
+        'StepStarted:F.b:1',
+        'StepSucceeded',
+        'IterationEnded:F:1',
+        'FrameExited:F:success',
+      ]);
+      expect(exited[1]).toMatchObject({ itemId: 'src.out#1', reason: 'success' });
+      expect(exited[1]).not.toHaveProperty('outputs');
+      expect(events.findIndex((e) => e.type === 'FrameEntered' && e.itemId === 'src.out#1')).toBeGreaterThan(exitAt);
+
+      const state = foldRun(events);
+      expect(state.status).toBe('succeeded');
+      expect(state.edges.get('F.error->errSink.in')).toEqual({ emitted: 1, consumed: 1 });
+      expect(state.frames.get('F')?.exitedCount).toBe(2);
+      expect(state.frames.get('F')?.active.size).toBe(0);
+      expect(state.nodes.get('F.b')?.inFlight.size).toBe(0);
+    });
+  });
 });
