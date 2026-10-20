@@ -1,4 +1,7 @@
-import type { Frame } from '@loopwork/graph';
+import type { NewEvent } from '@loopwork/eventlog';
+import type { FlowNode, Frame, JsonValue } from '@loopwork/graph';
+import type { Recorder } from './recorder.js';
+import type { Item } from './registry.js';
 
 type Backoff = Extract<Frame, { frame: 'retry' }>['backoff'];
 
@@ -23,4 +26,48 @@ export function sleep(ms: number, signal: AbortSignal): Promise<void> {
     }, ms);
     signal.addEventListener('abort', onAbort, { once: true });
   });
+}
+
+/** One live frame instance (one input item), keyed by its item id in the frame's `instances` map. */
+export type Instance = {
+  itemId: string;
+  value: JsonValue;
+  iteration: number;
+  elapsedMs: number;
+  timer?: ReturnType<typeof setTimeout>;
+  exhausted?: { message: string };
+};
+/** What a frame instance needs from the run: the recorder, the gated `emit` and the abort signal. */
+export type FrameHost = { rec: Recorder; emit(e: NewEvent): void; signal: AbortSignal };
+
+/** Engine-clock duration for IterationEnded.elapsedMs: bookkeeping that is never replayed, so reading the clock here is allowed. */
+const elapsed = (t0: number): number => Date.now() - t0;
+
+/**
+ * Lifecycle of one foreach instance (write-ahead: every event is logged before its effect). `runBody` enters the
+ * body and resolves when its pools have drained. A stopped run starts and finishes nothing.
+ */
+export async function runInstance(
+  h: FrameHost,
+  f: { id: string; node: Extract<FlowNode, { kind: 'frame' }>; instances: Map<string, Instance> },
+  item: Item,
+  runBody: (inst: Instance) => Promise<void>,
+  iteration = 1,
+): Promise<void> {
+  await h.rec.ready();
+  if (h.signal.aborted) return;
+  const inst: Instance = { itemId: item.itemId, value: item.value, iteration, elapsedMs: 0 };
+  f.instances.set(inst.itemId, inst);
+  try {
+    const t0 = Date.now();
+    h.emit({ type: 'FrameEntered', node: f.id, itemId: inst.itemId, frame: f.node.frame });
+    h.emit({ type: 'IterationStarted', node: f.id, itemId: inst.itemId, iteration });
+    await runBody(inst);
+    if (h.signal.aborted) return;
+    inst.elapsedMs = elapsed(t0);
+    h.emit({ type: 'IterationEnded', node: f.id, itemId: inst.itemId, iteration, elapsedMs: inst.elapsedMs });
+    h.emit({ type: 'FrameExited', node: f.id, itemId: inst.itemId, reason: 'input-done' });
+  } finally {
+    f.instances.delete(inst.itemId);
+  }
 }

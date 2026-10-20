@@ -5,7 +5,7 @@ import type { Channel } from './channel.js';
 import { unrunnable } from './guards.js';
 import { createRecorder } from './recorder.js';
 import type { Item, NodeRegistry } from './registry.js';
-import { createLimiter } from './scheduler.js';
+import { createLimiter, type Limiter } from './scheduler.js';
 import { createRunScope } from './scope.js';
 
 export type ExecuteOptions = {
@@ -101,6 +101,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<RunOutcome> {
     limiter: createLimiter(opts.maxInFlight ?? 64),
     capacity: opts.channelCapacity ?? 64,
     channels,
+    nodeLimiters: new Map<string, Limiter>(),
   })({ nodes: flow.nodes, edges: flow.edges, prefix: '' });
 
   const onAbort = (): void => stop({ status: 'cancelled' });

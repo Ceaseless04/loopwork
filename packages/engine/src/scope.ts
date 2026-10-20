@@ -3,7 +3,8 @@ import type { Edge, FlowNode, JsonValue } from '@loopwork/graph';
 import { createChannel, type Channel } from './channel.js';
 import type { Recorder } from './recorder.js';
 import type { Item, NodeKind, NodeRegistry, StepContext } from './registry.js';
-import { runPool, type Limiter } from './scheduler.js';
+import { runInstance, type Instance } from './frames.js';
+import { chain, createLimiter, runPool, type Limiter } from './scheduler.js';
 
 /** Run-wide state shared by every scope: one abort signal, recorder, global limiter and channel set. */
 export type ScopeEnv = {
@@ -18,9 +19,20 @@ export type ScopeEnv = {
   capacity: number;
   /** Every live channel of every scope; the run's stop() closes them all. */
   channels: Set<Channel<Item>>;
+  /** Per-node concurrency limiters of frame bodies, keyed by scoped id and shared by every instance of the frame. */
+  nodeLimiters: Map<string, Limiter>;
 };
-export type ScopeOpts = { nodes: Record<string, FlowNode>; edges: Edge[]; prefix: string };
-export type Scope = { work: Promise<void>[]; dispose(): void };
+/** A frame body scope also gets `entry` (scoped input port fed by `enter`) and `exit` (scoped output port forwarded out of the frame). */
+export type ScopeOpts = {
+  nodes: Record<string, FlowNode>;
+  edges: Edge[];
+  prefix: string;
+  entry?: string;
+  exit?: { port: string; send(item: Item): Promise<void> };
+  /** Concurrency inherited by body nodes that set none: the nearest enclosing foreach's. Absent outside frame bodies. */
+  defaultConcurrency?: number;
+};
+export type Scope = { work: Promise<void>[]; enter(port: string, item: Item): Promise<void>; dispose(): void };
 
 export function createRunScope(env: ScopeEnv): (o: ScopeOpts) => Scope {
   const { runId, rec, emit, signal, limiter } = env;
@@ -49,7 +61,13 @@ export function createRunScope(env: ScopeEnv): (o: ScopeOpts) => Scope {
     };
   };
 
-  return ({ nodes, edges, prefix }) => {
+  const nodeLimiterOf = (sid: string, concurrency: number): Limiter => {
+    let l = env.nodeLimiters.get(sid);
+    if (!l) env.nodeLimiters.set(sid, (l = createLimiter(concurrency)));
+    return l;
+  };
+
+  const runScope = ({ nodes, edges, prefix, entry, exit, defaultConcurrency }: ScopeOpts): Scope => {
     // Wiring keyed by port (`node.port`): one channel per consumer input port; `targets` = input ports fed by an output port; `refs` = producers still feeding a channel.
     const targets = new Map<string, string[]>();
     const refs = new Map<string, number>();
@@ -60,6 +78,7 @@ export function createRunScope(env: ScopeEnv): (o: ScopeOpts) => Scope {
       targets.set(from, [...(targets.get(from) ?? []), to]);
       refs.set(to, (refs.get(to) ?? 0) + 1);
     }
+    if (entry !== undefined) refs.set(entry, (refs.get(entry) ?? 0) + 1); // the frame boundary feeds the entry until enter() returns
     for (const [id, n] of Object.entries(nodes)) {
       if (n.kind === 'source') continue;
       const c = createChannel<Item>(env.capacity);
@@ -67,27 +86,32 @@ export function createRunScope(env: ScopeEnv): (o: ScopeOpts) => Scope {
       env.channels.add(c);
     }
     for (const [key, c] of channels) if (!refs.has(key)) c.close();
-    const release = (producer: string): void => {
-      for (const t of targets.get(producer) ?? []) {
-        const left = (refs.get(t) ?? 1) - 1;
-        refs.set(t, left);
-        if (left === 0) channels.get(t)?.close();
-      }
+    const unref = (t: string): void => {
+      const left = (refs.get(t) ?? 1) - 1;
+      refs.set(t, left);
+      if (left === 0) channels.get(t)?.close();
     };
+    const release = (producer: string): void => targets.get(producer)?.forEach(unref);
     const releaseOutputs = (sid: string): void => {
       release(`${sid}.out`);
       release(`${sid}.error`);
     };
     /** A send into a channel closed by stop() is expected, not an error. */
-    const sendTo = async (producer: string, item: Item): Promise<void> => {
-      for (const t of targets.get(producer) ?? []) {
-        try {
-          await channels.get(t)?.send(item, signal);
-        } catch (e) {
-          if (!signal.aborted) throw e;
-          return;
-        }
+    const tolerant = async (send: () => Promise<unknown> | undefined): Promise<void> => {
+      try {
+        await send();
+      } catch (e) {
+        if (!signal.aborted) throw e;
       }
+    };
+    const sendTo = (producer: string, item: Item): Promise<void> =>
+      tolerant(async () => {
+        for (const t of targets.get(producer) ?? []) await channels.get(t)?.send(item, signal);
+        if (producer === exit?.port) await exit.send(item);
+      });
+    const enter = async (port: string, item: Item): Promise<void> => {
+      await tolerant(() => channels.get(port)?.send(item, signal));
+      unref(port);
     };
 
     const work: Promise<void>[] = [];
@@ -113,9 +137,11 @@ export function createRunScope(env: ScopeEnv): (o: ScopeOpts) => Scope {
             emit({ type: 'SourceCompleted', node: sid, count });
           })().then(() => releaseOutputs(sid)),
         );
-      } else if (n.kind === 'map' || n.kind === 'sink') {
-        const input$ = channels.get(`${sid}.in`);
-        if (!input$) continue;
+        continue;
+      }
+      const input$ = channels.get(`${sid}.in`);
+      if (!input$) continue;
+      if (n.kind === 'map' || n.kind === 'sink') {
         const runStep = async ({ itemId, value }: Item, attempt: number): Promise<void | (() => Promise<void>)> => {
           const ctx = makeCtx(sid, itemId, attempt);
           emit({ type: 'StepStarted', node: sid, itemId, attempt: ctx.attempt });
@@ -157,18 +183,49 @@ export function createRunScope(env: ScopeEnv): (o: ScopeOpts) => Scope {
           runPool({
             input: input$,
             concurrency: n.concurrency ?? 1,
-            limiter,
+            limiter: prefix === '' ? limiter : chain(nodeLimiterOf(sid, n.concurrency ?? defaultConcurrency ?? 1), limiter),
             signal,
             handle: (item) => runStep(item, 1),
+          }).then(() => releaseOutputs(sid)),
+        );
+      } else if (n.frame === 'foreach') {
+        const instances = new Map<string, Instance>();
+        const entryPort = `${sid}.${n.body.entry.node}.${n.body.entry.port}`;
+        const runBody = async (inst: Instance): Promise<void> => {
+          if (signal.aborted) return;
+          const sub = runScope({
+            nodes: n.body.nodes,
+            edges: n.body.edges,
+            prefix: `${sid}.`,
+            entry: entryPort,
+            defaultConcurrency: n.concurrency,
+            exit: { port: `${sid}.${n.body.exit.node}.${n.body.exit.port}`, send: (it) => sendTo(`${sid}.out`, it) },
+          });
+          try {
+            await sub.enter(entryPort, { itemId: inst.itemId, value: inst.value });
+            await Promise.all(sub.work);
+          } finally {
+            sub.dispose();
+          }
+        };
+        work.push(
+          runPool({
+            input: input$,
+            concurrency: n.concurrency,
+            limiter: nodeLimiterOf(sid, n.concurrency), // the instance holds only the frame's permit, never a global one
+            signal,
+            handle: (item) => runInstance({ rec, emit, signal }, { id: sid, node: n, instances }, item, runBody),
           }).then(() => releaseOutputs(sid)),
         );
       }
     }
     return {
       work,
+      enter,
       dispose: () => {
         for (const c of channels.values()) env.channels.delete(c);
       },
     };
   };
+  return runScope;
 }
