@@ -10,6 +10,8 @@ export type RetryScope = {
   backoff: Backoff;
   /** Present for `emit-error`: marks the owning instance exhausted (first message wins) instead of failing the run. */
   exhaust?: (message: string) => void;
+  /** Whether the owning instance is exhausted: a while/until in its body then abandons its own instance. */
+  exhausted(): boolean;
 };
 
 const MAX_BACKOFF_MS = 60_000;
@@ -45,22 +47,23 @@ export type Instance = {
   exhausted?: { message: string };
 };
 /** What a frame instance needs from the run: the recorder, the gated `emit` and the abort signal. */
-export type FrameHost = { rec: Recorder; emit(e: NewEvent): void; signal: AbortSignal; send(port: string, item: Item): Promise<void>; fail(reason: 'budget', message: string, node: string): void };
+export type FrameHost = { rec: Recorder; emit(e: NewEvent): void; signal: AbortSignal; send(port: string, item: Item): Promise<void>; fail(reason: 'step' | 'budget', message: string, node: string): void };
 
 /** Engine-clock duration for IterationEnded.elapsedMs: bookkeeping that is never replayed, so reading the clock here is allowed. */
-const elapsed = (t0: number): number => Date.now() - t0;
+export const elapsed = (t0: number): number => Date.now() - t0;
 
 /**
- * Lifecycle of one foreach or retry instance (write-ahead: every event is logged before its effect). `runBody` enters the
- * body and resolves when its pools have drained. A stopped run starts and finishes nothing.
+ * Enters one frame instance (write-ahead: `FrameEntered` is logged first), arms its time budget and runs `run`; the
+ * instance is released afterwards. A stopped run starts and finishes nothing. `loggedElapsedMs` is time already spent
+ * before a resume, so the time budget keeps counting across restarts.
  */
-export async function runInstance(
+export async function withInstance(
   h: FrameHost,
   f: { id: string; node: Extract<FlowNode, { kind: 'frame' }>; instances: Map<string, Instance> },
   item: Item,
-  runBody: (inst: Instance) => Promise<void>,
-  iteration = 1,
-  loggedElapsedMs = 0, // time already spent before a resume, so the time budget keeps counting across restarts
+  iteration: number,
+  loggedElapsedMs: number,
+  run: (inst: Instance, t0: number) => Promise<void>,
 ): Promise<void> {
   await h.rec.ready();
   if (h.signal.aborted) return;
@@ -69,7 +72,6 @@ export async function runInstance(
   try {
     const t0 = Date.now();
     h.emit({ type: 'FrameEntered', node: f.id, itemId: inst.itemId, frame: f.node.frame });
-    h.emit({ type: 'IterationStarted', node: f.id, itemId: inst.itemId, iteration });
     const limit = f.node.budgets.maxDurationMs;
     // Log-then-stop in one tick: BudgetExceeded is emitted before fail() aborts the run (emit drops after the abort).
     inst.timer = setTimeout(() => {
@@ -77,6 +79,27 @@ export async function runInstance(
       h.emit({ type: 'BudgetExceeded', node: f.id, itemId: inst.itemId, budget: 'time', limit, used: loggedElapsedMs + elapsed(t0) });
       h.fail('budget', `frame "${f.id}" exceeded its time budget (maxDurationMs=${limit})`, f.id);
     }, limit - loggedElapsedMs);
+    await run(inst, t0);
+  } finally {
+    clearTimeout(inst.timer);
+    f.instances.delete(inst.itemId);
+  }
+}
+
+/**
+ * Lifecycle of one foreach or retry instance (write-ahead: every event is logged before its effect). `runBody` enters the
+ * body and resolves when its pools have drained.
+ */
+export function runInstance(
+  h: FrameHost,
+  f: { id: string; node: Extract<FlowNode, { kind: 'frame' }>; instances: Map<string, Instance> },
+  item: Item,
+  runBody: (inst: Instance) => Promise<void>,
+  iteration = 1,
+  loggedElapsedMs = 0,
+): Promise<void> {
+  return withInstance(h, f, item, iteration, loggedElapsedMs, async (inst, t0) => {
+    h.emit({ type: 'IterationStarted', node: f.id, itemId: inst.itemId, iteration });
     await runBody(inst);
     if (h.signal.aborted) return;
     inst.elapsedMs = elapsed(t0);
@@ -89,8 +112,5 @@ export async function runInstance(
       return;
     }
     h.emit({ type: 'FrameExited', node: f.id, itemId: inst.itemId, reason: f.node.frame === 'retry' ? 'success' : 'input-done' });
-  } finally {
-    clearTimeout(inst.timer);
-    f.instances.delete(inst.itemId);
-  }
+  });
 }
