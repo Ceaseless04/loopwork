@@ -8,30 +8,29 @@ import { type Rec, ref, edge, mapNode, validFlow, SRC, FE, SRC_OUT, get, edit, c
 
 describe('T12: large inputs run in linear time', () => {
   // The repo's ratio guard (see schema.test.ts): ONE call at n against TEN calls at n/10, interleaved, after a warm-up.
-  // Linear code stays below ~3x; a quadratic regression shows ~8-20x. A borderline attempt is retried, up to three.
+  // Linear code stays below ~3x; a quadratic regression shows ~8-20x. Each side keeps its best time over up to five rounds
+  // (a monotonic clock, and a stall on one round cannot fail the test), so only growth seen in every round counts.
   const MAX_GROWTH = 4;
   const FLOOR_MS = 25;
   const elapsed = (fn: () => unknown): number => {
-    const start = Date.now();
+    const start = performance.now();
     fn();
-    return Date.now() - start;
+    return performance.now() - start;
   };
   const expectLinear = <T>(label: string, make: (n: number) => T, runIt: (input: T) => unknown, n = WIDE): void => {
     const big = make(n);
     const small = make(n / 10);
     runIt(small);
-    const attempts: string[] = [];
-    for (let i = 0; i < 3; i++) {
-      const tenSmall = elapsed(() => {
+    let bestSmall = Infinity;
+    let bestBig = Infinity;
+    for (let i = 0; i < 5; i++) {
+      bestSmall = Math.min(bestSmall, elapsed(() => {
         for (let k = 0; k < 10; k++) runIt(small);
-      });
-      const oneBig = elapsed(() => runIt(big));
-      const growth = oneBig / Math.max(tenSmall, FLOOR_MS);
-      if (growth <= MAX_GROWTH) return;
-      attempts.push(`${oneBig} ms for n=${n} vs ${tenSmall} ms for 10 x n=${n / 10}`);
-      if (growth > 2 * MAX_GROWTH) break;
+      }));
+      bestBig = Math.min(bestBig, elapsed(() => runIt(big)));
+      if (bestBig / Math.max(bestSmall, FLOOR_MS) <= MAX_GROWTH) return;
     }
-    expect(attempts, `${label} grows faster than linearly`).toEqual([]);
+    expect(`${bestBig.toFixed(0)} ms for n=${n} vs ${bestSmall.toFixed(0)} ms for 10 x n=${n / 10}`, `${label} grows faster than linearly`).toBe('linear');
   };
   const okParse = (input: unknown): void => {
     const r: ParseResult = parseFlow(input);
