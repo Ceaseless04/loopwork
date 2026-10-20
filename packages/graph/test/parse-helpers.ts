@@ -347,10 +347,17 @@ export const jsonFrameChain = (n: number): unknown => {
   const open = '{"kind":"frame","frame":"foreach","budgets":{},"in":{},"body":{"edges":[],"entry":{"node":"f","port":"in"},"exit":{"node":"f","port":"out"},"nodes":{"f":';
   return JSON.parse(`{"version":1,"id":"x","name":"x","edges":[],"nodes":{"f":${open.repeat(n)}{"kind":"map","fn":"g","in":{},"out":{}}${'}}}'.repeat(n)}}}`);
 };
+// Monotonic clock (Date.now steps with NTP/WSL resume) and best of three, as perf.test.ts does: a stalled run is retried,
+// but an exponential expansion blows the budget in every run. Stops at the first run inside the budget.
 export const withinSeconds = (seconds: number, run: () => ValidationError[]): ValidationError[] => {
-  const start = Date.now();
-  const errors = run();
-  expect(Date.now() - start).toBeLessThan(seconds * 1000);
+  let best = Infinity;
+  let errors: ValidationError[] = [];
+  for (let i = 0; i < 3 && best >= seconds * 1000; i++) {
+    const start = performance.now();
+    errors = run();
+    best = Math.min(best, performance.now() - start);
+  }
+  expect(best).toBeLessThan(seconds * 1000);
   return errors;
 };
 // What is kept is bounded: the characters of the recorded errors stay near the work limit (each error may carry a little free).
