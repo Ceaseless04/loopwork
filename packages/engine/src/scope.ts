@@ -242,27 +242,29 @@ export function createRunScope(env: ScopeEnv): (o: ScopeOpts) => Scope {
             sub.dispose();
           }
         };
+        const host = { rec, emit, signal, fail: env.fail, send: (port: string, it: Item) => sendTo(`${sid}.${port}`, it) };
+        const loop =
+          n.frame === 'while' || n.frame === 'until'
+            ? {
+                node: n,
+                ops: {
+                  runId,
+                  test: fnOf('predicate', n.condition),
+                  iterate: (inst: Instance, e: Item) => {
+                    const out: Item[] = [];
+                    return runBody(inst, e, out).then(() => out);
+                  },
+                  abandoned: () => retry?.exhausted() ?? false,
+                },
+              }
+            : undefined;
         work.push(
           runPool({
             input: input$,
             concurrency,
             limiter: frameLimiter, // the instance holds only the frame's permit, never a global one
             signal,
-            handle: (item) => {
-              const host = { rec, emit, signal, fail: env.fail, send: (port: string, it: Item) => sendTo(`${sid}.${port}`, it) };
-              if (n.frame !== 'while' && n.frame !== 'until') return runInstance(host, { id: sid, node: n, instances }, item, runBody);
-              const ops = {
-                runId,
-                test: fnOf('predicate', n.condition),
-                iterate: async (inst: Instance, e: Item) => {
-                  const out: Item[] = [];
-                  await runBody(inst, e, out);
-                  return out;
-                },
-                abandoned: () => retry?.exhausted() ?? false,
-              };
-              return runLoopInstance(host, { id: sid, node: n, instances }, item, ops);
-            },
+            handle: (item) => (loop ? runLoopInstance(host, { id: sid, node: loop.node, instances }, item, loop.ops) : runInstance(host, { id: sid, node: n, instances }, item, runBody)),
           }).then(() => releaseOutputs(sid)),
         );
       }

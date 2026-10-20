@@ -1,5 +1,5 @@
 import { MemoryStore, foldRun, type LoopworkEvent } from '@loopwork/eventlog';
-import { flow, type Flow, type JsonValue } from '@loopwork/graph';
+import { flow, type Flow, type Frame, type JsonValue } from '@loopwork/graph';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createBuiltins, executeRun, type NodeRegistry, type RunOutcome } from '../src/index.js';
 import { eventsOf, foreachFrame, frameFlow, loopFrame, retryFrame, startRun } from './helpers.js';
@@ -38,6 +38,27 @@ async function exec(def: Flow, registry: NodeRegistry) {
   clearTimeout(timer);
   return { outcome, events: await eventsOf(store, 'r') };
 }
+
+/** Starts the run with small channels and per-event flushes; `outcome()` is undefined until it settles. `stop` aborts a stuck run on cleanup. */
+async function start(def: Flow, registry: NodeRegistry) {
+  const store = new MemoryStore();
+  const { expectedSeq } = await startRun(store, 'r', def);
+  const ac = new AbortController();
+  let settled: RunOutcome | undefined;
+  void executeRun({ runId: 'r', store, registry, signal: ac.signal, workerId: 'w1', expectedSeq, channelCapacity: 1, flush: { maxEvents: 1, maxMs: 1 } }).then((o) => (settled = o));
+  return { outcome: () => settled, events: () => eventsOf(store, 'r'), stop: () => ac.abort() };
+}
+
+/** A sink `gate` that holds every item until `open()` is called. */
+function gatedRegistry(): { registry: NodeRegistry; open(): void } {
+  let open!: () => void;
+  const gate = new Promise<void>((resolve) => (open = resolve));
+  const registry = loopRegistry();
+  registry.sink('gate', () => gate);
+  return { registry, open };
+}
+
+const withBudget = (frame: Frame, maxDurationMs: number): Frame => ({ ...frame, budgets: { ...frame.budgets, maxDurationMs } });
 
 /** Lifecycle of one frame instance as `Type:detail` tags, in log order. */
 function trace(events: LoopworkEvent[], itemId: string, node = 'F'): string[] {
@@ -394,6 +415,170 @@ describe('nested loops', () => {
     const state = foldRun(events);
     expect(state.edges.get('F.error->errSnk.in')).toEqual({ emitted: 2, consumed: 2 });
     expect(state.edges.get('F.out->snk.in')).toEqual({ emitted: 1, consumed: 1 });
+    expectNoActive(events);
+  });
+});
+
+describe('loop repair round', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('EC-15: once an enclosing emit-error retry is exhausted, a queued sibling loop instance starts no iteration and exits retries-exhausted', async () => {
+    const registry = loopRegistry();
+    registry.map('fan2', async (item) => [item, item]);
+    registry.map('boom', async () => {
+      throw new Error('boom');
+    });
+    const inner = loopFrame({ frame: 'while', condition: 'always', maxIterations: 5, fn: 'boom' });
+    const retry = retryFrame({
+      maxAttempts: 1,
+      backoff: { kind: 'fixed', baseMs: 1 },
+      onExhausted: 'emit-error',
+      nodes: { b: { kind: 'map', fn: 'fan2', in: ANY, out: ANY }, W: inner },
+      edges: [{ from: { node: 'b', port: 'out' }, to: { node: 'W', port: 'in' } }],
+      exit: 'W',
+    });
+    const def = flow('f', 'F')
+      .source('src', { fn: 'range', params: { count: 1 }, out: ANY })
+      .frame('F', retry)
+      .sink('snk', { fn: 'discard', in: ANY })
+      .sink('errSnk', { fn: 'discard', in: ANY })
+      .edge('src.out', 'F.in')
+      .edge('F.out', 'snk.in')
+      .edge('F.error', 'errSnk.in')
+      .build();
+    const { outcome, events } = await exec(def, registry);
+
+    expect(outcome).toEqual({ status: 'succeeded' });
+    expect(events.filter((e) => e.type === 'StepStarted' && e.node === 'F.W.b')).toHaveLength(1); // the sibling's body never started
+    expect(trace(events, 'src.out#0>F.b.out#0', 'F.W')).toEqual(['FrameEntered:while', 'IterationStarted:1', 'IterationEnded:1', 'FrameExited:retries-exhausted']);
+    expect(trace(events, 'src.out#0>F.b.out#1', 'F.W')).toEqual(['FrameEntered:while', 'FrameExited:retries-exhausted']);
+    for (const e of frameExits(events, 'F.W')) expect(e).not.toHaveProperty('outputs');
+    expectNoActive(events);
+  });
+
+  it('EC-7: IterationEnded.elapsedMs covers the predicate time between iterations; the whole-instance timer still enforces maxDurationMs', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const registry = loopRegistry();
+    const slow = (ok: (s: JsonValue) => boolean) => async (s: JsonValue) => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 300));
+      return ok(s);
+    };
+    registry.predicate('slowBelow3', slow((s) => typeof s === 'number' && s < 3));
+    registry.predicate('slowAlways', slow(() => true));
+    const run = async (def: Flow) => {
+      const r = await start(def, registry);
+      try {
+        for (let i = 0; i < 200 && r.outcome() === undefined; i++) {
+          await tick();
+          await vi.advanceTimersByTimeAsync(50);
+        }
+      } finally {
+        r.stop();
+      }
+      return { outcome: r.outcome(), events: await r.events() };
+    };
+
+    const ok = await run(frameFlow(loopFrame({ frame: 'while', condition: 'slowBelow3', maxIterations: 10, fn: 'increment', fnParams: INC })));
+    expect(ok.outcome).toEqual({ status: 'succeeded' });
+    const ended = ok.events.flatMap((e) => (e.type === 'IterationEnded' ? [e.elapsedMs] : []));
+    expect(ended).toHaveLength(3);
+    for (const ms of ended) expect(ms).toBeGreaterThanOrEqual(300); // each carries the check before it
+    expect(ended.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(900); // 4 checks x 300 ms, minus the final one that is not logged
+
+    const over = await run(frameFlow(loopFrame({ frame: 'while', condition: 'slowAlways', maxIterations: 100, maxDurationMs: 1000, fn: 'increment', fnParams: INC })));
+    expect(over.outcome).toMatchObject({ status: 'failed', reason: 'budget', node: 'F' });
+    expect(over.events.filter((e) => e.type === 'BudgetExceeded')).toMatchObject([{ budget: 'time', limit: 1000 }]);
+  });
+
+  /** Runs until the third instance's exit is blocked on the gated sink, lets the (tiny) budget lapse, then opens the gate. */
+  async function blockedSendOutlivesBudget(def: Flow, registry: NodeRegistry, open: () => void): Promise<LoopworkEvent[]> {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const r = await start(def, registry);
+    try {
+      for (let i = 0; i < 30; i++) await tick();
+      expect(count(await r.events(), 'FrameExited')).toBeGreaterThanOrEqual(2); // the exits are logged, the last delivery is blocked
+      await vi.advanceTimersByTimeAsync(500); // far past the 100 ms budget
+      await tick();
+      expect(r.outcome()).toBeUndefined();
+      open();
+      await until(() => r.outcome() !== undefined);
+    } finally {
+      r.stop();
+    }
+    expect(r.outcome()).toEqual({ status: 'succeeded' });
+    return r.events();
+  }
+
+  it('frames: a loop exit blocked on downstream backpressure past maxDurationMs does not log BudgetExceeded after FrameExited', async () => {
+    const { registry, open } = gatedRegistry();
+    const def = flow('f', 'F')
+      .source('src', { fn: 'range', params: { count: 3 }, out: ANY })
+      .frame('F', withBudget(loopFrame({ frame: 'while', condition: 'never', maxIterations: 5 }), 100))
+      .sink('snk', { fn: 'gate', in: ANY })
+      .edge('src.out', 'F.in')
+      .edge('F.out', 'snk.in')
+      .build();
+    const events = await blockedSendOutlivesBudget(def, registry, open);
+
+    expect(count(events, 'BudgetExceeded')).toBe(0);
+    expect(count(events, 'RunFailed')).toBe(0);
+    expect(frameExits(events)).toHaveLength(3);
+  });
+
+  it('frames: a retry emit-error send blocked on downstream backpressure past maxDurationMs does not log BudgetExceeded after FrameExited', async () => {
+    const { registry, open } = gatedRegistry();
+    registry.map('boom', async () => {
+      throw new Error('boom');
+    });
+    const retry = retryFrame({ maxAttempts: 1, backoff: { kind: 'fixed', baseMs: 1 }, onExhausted: 'emit-error', nodes: { b: { kind: 'map', fn: 'boom', in: ANY, out: ANY } } });
+    const def = flow('f', 'F')
+      .source('src', { fn: 'range', params: { count: 3 }, out: ANY })
+      .frame('F', withBudget(retry, 100))
+      .sink('snk', { fn: 'discard', in: ANY })
+      .sink('errSnk', { fn: 'gate', in: ANY })
+      .edge('src.out', 'F.in')
+      .edge('F.out', 'snk.in')
+      .edge('F.error', 'errSnk.in')
+      .build();
+    const events = await blockedSendOutlivesBudget(def, registry, open);
+
+    expect(count(events, 'BudgetExceeded')).toBe(0);
+    expect(count(events, 'RunFailed')).toBe(0);
+    expect(frameExits(events).map((e) => e.type === 'FrameExited' && e.reason)).toEqual(['retries-exhausted', 'retries-exhausted', 'retries-exhausted']);
+  });
+
+  it('frames: an until predicate that throws after the body fails the run as step on the frame node, without a StepFailed event', async () => {
+    const registry = loopRegistry();
+    registry.predicate('explode', async () => {
+      throw new Error('until boom');
+    });
+    const { outcome, events } = await exec(frameFlow(loopFrame({ frame: 'until', condition: 'explode', maxIterations: 5, fn: 'increment', fnParams: INC })), registry);
+
+    expect(outcome).toEqual({ status: 'failed', reason: 'step', node: 'F', message: 'until boom' });
+    expect(count(events, 'StepFailed')).toBe(0);
+    expect(events.slice(-2)).toMatchObject([{ type: 'IterationEnded', node: 'F', iteration: 1 }, { type: 'RunFailed', reason: 'step', node: 'F' }]);
+    expect(frameExits(events)).toEqual([]);
+  });
+
+  it('EC-15: a while whose body is a fail-run retry retries a flaky step inside the iteration and the loop completes', async () => {
+    const seen = new Map<string, number>();
+    const registry = loopRegistry();
+    registry.map('flaky', async (item, ctx) => {
+      const n = (seen.get(ctx.itemId) ?? 0) + 1;
+      seen.set(ctx.itemId, n);
+      if (ctx.itemId.endsWith('iter#2') && n === 1) throw new Error('flaky first try');
+      return (item as number) + 1;
+    });
+    const retry = retryFrame({ maxAttempts: 3, backoff: { kind: 'fixed', baseMs: 1 }, nodes: { b: { kind: 'map', fn: 'flaky', in: ANY, out: ANY } } });
+    const { outcome, events } = await exec(frameFlow(loopFrame({ frame: 'while', condition: 'below3', maxIterations: 10, nodes: { b: retry } })), registry);
+
+    expect(outcome).toEqual({ status: 'succeeded' });
+    expect(events.filter((e) => e.type === 'StepFailed').map((e) => e.type === 'StepFailed' && [e.node, e.attempt, e.willRetry])).toEqual([['F.b.b', 1, true]]);
+    expect(trace(events, 'src.out#0').filter((t) => t.startsWith('IterationStarted'))).toHaveLength(3);
+    expect(frameExits(events)[0]).toMatchObject({ reason: 'condition', outputs: [{ value: 3 }] });
+    expect(frameExits(events, 'F.b').map((e) => e.type === 'FrameExited' && e.reason)).toEqual(['success', 'success', 'success']);
     expectNoActive(events);
   });
 });

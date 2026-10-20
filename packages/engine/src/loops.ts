@@ -24,7 +24,7 @@ export function runLoopInstance(
 ): Promise<void> {
   const { node } = f;
   const max = node.budgets.maxIterations;
-  return withInstance(h, f, item, 1, 0, async (inst) => {
+  return withInstance(h, f, item, 1, 0, async (inst, t0) => {
     let state = item.value;
     // undefined = stop: a throwing predicate fails the run as a step error of the frame (it is not a step: no StepFailed).
     const holds = async (): Promise<boolean | undefined> => {
@@ -35,8 +35,12 @@ export function runLoopInstance(
         return undefined;
       }
     };
+    // An enclosing emit-error retry was exhausted: the instance is dropped without outputs (fold drops it on this exit).
+    const abandon = (): void => h.emit({ type: 'FrameExited', node: f.id, itemId: inst.itemId, reason: 'retries-exhausted' });
+    let mark = t0; // IterationEnded.elapsedMs spans from here, so the predicate time between iterations is counted
     let n = 0;
     for (;;) {
+      if (ops.abandoned()) return abandon(); // no iteration starts once the retry is exhausted
       if (node.frame === 'while') {
         const go = await holds();
         if (go === undefined || h.signal.aborted) return;
@@ -49,14 +53,11 @@ export function runLoopInstance(
       n++;
       inst.iteration = n;
       h.emit({ type: 'IterationStarted', node: f.id, itemId: inst.itemId, iteration: n });
-      const t0 = Date.now();
       const out = await ops.iterate(inst, { itemId: `${inst.itemId}>${f.id}.iter#${n}`, value: state });
       if (h.signal.aborted) return;
-      h.emit({ type: 'IterationEnded', node: f.id, itemId: inst.itemId, iteration: n, elapsedMs: elapsed(t0) });
-      if (ops.abandoned()) {
-        h.emit({ type: 'FrameExited', node: f.id, itemId: inst.itemId, reason: 'retries-exhausted' });
-        return;
-      }
+      h.emit({ type: 'IterationEnded', node: f.id, itemId: inst.itemId, iteration: n, elapsedMs: elapsed(mark) });
+      mark = Date.now();
+      if (ops.abandoned()) return abandon();
       const [next] = out;
       if (out.length !== 1 || !next) return h.fail('step', `frame "${f.id}" body emitted ${out.length} items; expected exactly 1`, f.id);
       state = next.value;
