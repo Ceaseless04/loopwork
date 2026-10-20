@@ -2,7 +2,7 @@ import { MemoryStore, foldRun, type LoopworkEvent } from '@loopwork/eventlog';
 import { flow, type Flow, type JsonValue } from '@loopwork/graph';
 import { describe, expect, it } from 'vitest';
 import { createBuiltins, executeRun } from '../src/index.js';
-import { eventsOf, foreachFrame, frameFlow, startRun } from './helpers.js';
+import { eventsOf, foreachFrame, frameFlow, retryFrame, startRun } from './helpers.js';
 
 const ANY = {};
 
@@ -200,5 +200,37 @@ describe('foreach frames', () => {
     // b#0 holds the node permit and one of two global permits; b#1, b#2 queue on the node limiter only, leaving `side` a global permit.
     const { outcome } = await exec(def, registry, { maxInFlight: 2, guardMs: 1000 });
     expect(outcome).toEqual({ status: 'succeeded' });
+  });
+
+  it('frames: a retry frame inside a foreach body runs its instances in parallel, up to the inherited foreach concurrency', async () => {
+    const { registry, gauge } = probeRegistry();
+    const probe = { b: { kind: 'map' as const, fn: 'probe', in: ANY, out: ANY } };
+    const retry = retryFrame({ maxAttempts: 1, backoff: { kind: 'fixed', baseMs: 1000 }, nodes: probe });
+    const { outcome } = await exec(frameFlow(foreachFrame({ concurrency: 4, nodes: { b: retry } }), 8), registry, { guardMs: 3000 });
+    expect(outcome).toEqual({ status: 'succeeded' });
+    expect(gauge.peak).toBe(4);
+  });
+
+  describe('body concurrency inside one foreach instance', () => {
+    const run = async (concurrency?: number): Promise<number> => {
+      const { registry, gauge } = probeRegistry();
+      registry.map('fan', async () => [0, 1, 2, 3]);
+      const nodes = {
+        a: { kind: 'map' as const, fn: 'fan', in: ANY, out: ANY },
+        b: { kind: 'map' as const, fn: 'probe', in: ANY, out: ANY, ...(concurrency !== undefined && { concurrency }) },
+      };
+      const body = foreachFrame({ concurrency: 4, nodes, edges: [{ from: { node: 'a', port: 'out' }, to: { node: 'b', port: 'in' } }], entry: 'a', exit: 'b' });
+      const { outcome } = await exec(frameFlow(body, 1), registry, { guardMs: 3000 });
+      expect(outcome).toEqual({ status: 'succeeded' });
+      return gauge.peak;
+    };
+
+    it('frames: a body node without its own concurrency inherits the frame concurrency across its pool workers', async () => {
+      expect(await run()).toBe(4);
+    });
+
+    it('frames: a body node with its own concurrency keeps it across its pool workers', async () => {
+      expect(await run(2)).toBe(2);
+    });
   });
 });

@@ -74,7 +74,7 @@ export async function runInstance(
     // Log-then-stop in one tick: BudgetExceeded is emitted before fail() aborts the run (emit drops after the abort).
     inst.timer = setTimeout(() => {
       if (h.signal.aborted) return;
-      h.emit({ type: 'BudgetExceeded', node: f.id, itemId: inst.itemId, budget: 'time', limit, used: elapsed(t0) });
+      h.emit({ type: 'BudgetExceeded', node: f.id, itemId: inst.itemId, budget: 'time', limit, used: loggedElapsedMs + elapsed(t0) });
       h.fail('budget', `frame "${f.id}" exceeded its time budget (maxDurationMs=${limit})`, f.id);
     }, limit - loggedElapsedMs);
     await runBody(inst);
@@ -84,6 +84,7 @@ export async function runInstance(
     if (inst.exhausted) {
       const error = { itemId: `${inst.itemId}>${f.id}.error#0`, value: { message: inst.exhausted.message, item: inst.value } };
       h.emit({ type: 'FrameExited', node: f.id, itemId: inst.itemId, reason: 'retries-exhausted', outputs: [{ port: 'error', ...error }] });
+      clearTimeout(inst.timer); // already exited: a breach while the error send is blocked must not log BudgetExceeded
       await h.send('error', error); // write-ahead: FrameExited is logged before the error item is delivered
       return;
     }

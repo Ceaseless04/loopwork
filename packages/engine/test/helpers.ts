@@ -40,15 +40,22 @@ export function pipelineFlow(o: {
 }
 
 /** A foreach frame whose body is `nodes` (default: one map `b`, fn `fn`, entry `b.in`, exit `b.out`). */
-export function foreachFrame(o: { concurrency: number; fn?: string; nodes?: Record<string, FlowNode> }): Frame {
+export function foreachFrame(o: {
+  concurrency: number;
+  fn?: string;
+  nodes?: Record<string, FlowNode>;
+  edges?: Edge[];
+  entry?: string;
+  exit?: string;
+}): Frame {
   return {
     kind: 'frame',
     frame: 'foreach',
     body: {
       nodes: o.nodes ?? { b: { kind: 'map', fn: o.fn ?? 'identity', in: any, out: any } },
-      edges: [],
-      entry: { node: 'b', port: 'in' },
-      exit: { node: 'b', port: 'out' },
+      edges: o.edges ?? [],
+      entry: { node: o.entry ?? 'b', port: 'in' },
+      exit: { node: o.exit ?? 'b', port: 'out' },
     },
     budgets: { maxIterations: 1, maxDurationMs: 600_000 },
     concurrency: o.concurrency,

@@ -30,7 +30,9 @@ packages/engine/
   src/builtins.ts       createBuiltins(): NodeRegistry
   src/channel.ts        bounded async channel (backpressure)
   src/scheduler.ts      per-node worker pool, global in-flight cap
-  src/frames.ts   frame-instance runners: foreach, retry (slice 3), while/until (slice 4)
+  src/scope.ts          run-scope wiring, recursive frame execution
+  src/guards.ts         runnability guard
+  src/frames.ts         frame-instance runner + retry/backoff primitives (while/until: slice 4)
   src/recorder.ts       batching event writer (flush by count/time)
   src/resume.ts         derives work to redo from RunState   (slice 3-5)
   test/
