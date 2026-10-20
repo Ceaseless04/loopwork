@@ -168,10 +168,10 @@ describe('executeRun', () => {
       const wf = flow('f', 'F')
         .frame('loop', {
           kind: 'frame',
-          frame: 'foreach',
+          frame: 'while',
           body: { nodes: {}, edges: [], entry: { node: 'x', port: 'in' }, exit: { node: 'x', port: 'out' } },
           budgets: { maxIterations: 1, maxDurationMs: 1000 },
-          concurrency: 1,
+          condition: 'go',
           in: {},
           out: {},
         })

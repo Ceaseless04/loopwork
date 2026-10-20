@@ -1,5 +1,5 @@
 import type { EventStore, LoopworkEvent, MemoryStore } from '@loopwork/eventlog';
-import { flow, type Flow, type JsonValue } from '@loopwork/graph';
+import { flow, type Edge, type Flow, type FlowNode, type Frame, type JsonValue } from '@loopwork/graph';
 
 const any = {};
 
@@ -37,6 +37,71 @@ export function pipelineFlow(o: {
     ],
     sink: { fn: o.sinkFn ?? 'discard', ...(o.sinkConcurrency !== undefined && { concurrency: o.sinkConcurrency }) },
   });
+}
+
+/** A foreach frame whose body is `nodes` (default: one map `b`, fn `fn`, entry `b.in`, exit `b.out`). */
+export function foreachFrame(o: {
+  concurrency: number;
+  fn?: string;
+  nodes?: Record<string, FlowNode>;
+  edges?: Edge[];
+  entry?: string;
+  exit?: string;
+}): Frame {
+  return {
+    kind: 'frame',
+    frame: 'foreach',
+    body: {
+      nodes: o.nodes ?? { b: { kind: 'map', fn: o.fn ?? 'identity', in: any, out: any } },
+      edges: o.edges ?? [],
+      entry: { node: o.entry ?? 'b', port: 'in' },
+      exit: { node: o.exit ?? 'b', port: 'out' },
+    },
+    budgets: { maxIterations: 1, maxDurationMs: 600_000 },
+    concurrency: o.concurrency,
+    in: any,
+    out: any,
+  };
+}
+
+type RetryFrame = Extract<Frame, { frame: 'retry' }>;
+
+/** A retry frame whose body is `nodes` (default: one map `b`, identity; entry `b.in`, exit `<exit>.out`, default `b`). */
+export function retryFrame(o: {
+  maxAttempts: number;
+  backoff: RetryFrame['backoff'];
+  onExhausted?: RetryFrame['onExhausted'];
+  nodes?: Record<string, FlowNode>;
+  edges?: Edge[];
+  exit?: string;
+}): Frame {
+  return {
+    kind: 'frame',
+    frame: 'retry',
+    body: {
+      nodes: o.nodes ?? { b: { kind: 'map', fn: 'identity', in: any, out: any } },
+      edges: o.edges ?? [],
+      entry: { node: 'b', port: 'in' },
+      exit: { node: o.exit ?? 'b', port: 'out' },
+    },
+    budgets: { maxIterations: 1, maxDurationMs: 3_600_000 },
+    maxAttempts: o.maxAttempts,
+    backoff: o.backoff,
+    onExhausted: o.onExhausted ?? 'fail-run',
+    in: any,
+    out: any,
+  };
+}
+
+/** `src(range count) -> F -> snk` around the given frame. */
+export function frameFlow(frame: Frame, count = 1): Flow {
+  return flow('f', 'F')
+    .source('src', { fn: 'range', params: { count }, out: any })
+    .frame('F', frame)
+    .sink('snk', { fn: 'discard', in: any })
+    .edge('src.out', 'F.in')
+    .edge('F.out', 'snk.in')
+    .build();
 }
 
 /** Creates the run (RunCreated is seq 1), so the first engine append expects seq 1. */

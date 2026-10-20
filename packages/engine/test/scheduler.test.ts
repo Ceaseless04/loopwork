@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createChannel, type Channel } from '../src/channel.js';
-import { createLimiter, runPool } from '../src/scheduler.js';
+import { chain, createLimiter, runPool } from '../src/scheduler.js';
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 
@@ -343,5 +343,28 @@ describe('runPool', () => {
     const outcome = await Promise.race([pool.then(() => 'done'), timeout]);
     clearTimeout(timer);
     expect(outcome).toBe('done');
+  });
+
+  it('scheduler: chain takes the first limiter before the second and releases in reverse', async () => {
+    const g = createLimiter(1);
+    await g.acquire(); // the global cap is held by someone else
+    const n = createLimiter(2);
+    const c = chain(n, g);
+
+    let acquired = false;
+    const p = c.acquire().then(() => (acquired = true));
+    await tick();
+    expect(acquired).toBe(false);
+    expect(n.inFlight).toBe(1); // node permit taken first, still waiting on the global one
+    expect(c.inFlight).toBe(g.inFlight);
+
+    g.release(); // hands the global permit to the chain
+    await p;
+    expect(n.inFlight).toBe(1);
+    expect(g.inFlight).toBe(1);
+
+    c.release();
+    expect(n.inFlight).toBe(0);
+    expect(g.inFlight).toBe(0);
   });
 });
