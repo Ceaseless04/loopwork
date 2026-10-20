@@ -93,6 +93,37 @@ export function retryFrame(o: {
   };
 }
 
+/** A while/until frame whose body is `nodes` (default: one map `b`, fn `fn` (identity) with `fnParams`; entry `<entry>.in`, exit `<exit>.out`, both default `b`). */
+export function loopFrame(o: {
+  frame: 'while' | 'until';
+  condition: string;
+  conditionParams?: JsonValue;
+  maxIterations: number;
+  maxDurationMs?: number;
+  fn?: string;
+  fnParams?: JsonValue;
+  nodes?: Record<string, FlowNode>;
+  edges?: Edge[];
+  entry?: string;
+  exit?: string;
+}): Frame {
+  return {
+    kind: 'frame',
+    frame: o.frame,
+    body: {
+      nodes: o.nodes ?? { b: { kind: 'map', fn: o.fn ?? 'identity', ...(o.fnParams !== undefined && { params: o.fnParams }), in: any, out: any } },
+      edges: o.edges ?? [],
+      entry: { node: o.entry ?? 'b', port: 'in' },
+      exit: { node: o.exit ?? 'b', port: 'out' },
+    },
+    budgets: { maxIterations: o.maxIterations, maxDurationMs: o.maxDurationMs ?? 3_600_000 },
+    condition: o.condition,
+    ...(o.conditionParams !== undefined && { conditionParams: o.conditionParams }),
+    in: any,
+    out: any,
+  };
+}
+
 /** `src(range count) -> F -> snk` around the given frame. */
 export function frameFlow(frame: Frame, count = 1): Flow {
   return flow('f', 'F')
