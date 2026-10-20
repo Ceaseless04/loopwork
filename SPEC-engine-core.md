@@ -83,7 +83,7 @@ Needed by tests, the exit gate, the GUI's demo flows and `loopwork init`'s sampl
 **Streaming.** Each edge is a bounded channel. A producer awaits when the channel is full (backpressure), so a
 slow sink stalls the source instead of buffering unboundedly. Every `map`/`sink` node runs up to `concurrency`
 steps at once (default 1), and all nodes together never exceed `maxInFlight`. Output order is **completion
-order**, not input order; lineage is carried in `itemId`. A body node's `concurrency` is shared across all instances of its frame. Engine memory is O(channels + in-flight), independent of item count (the store and the resume fold are excluded).
+order**, not input order; lineage is carried in `itemId`. A body node's `concurrency` is shared across all instances of its frame; a body node of a `foreach` that sets none inherits the frame's `concurrency` (an explicit value still caps it), so `foreach` parallelism is not silently limited to one step at a time. Engine memory is O(channels + in-flight), independent of item count (the store and the resume fold are excluded).
 A step's `fn` holds the global `maxInFlight` permit; outbound sends (which may block on a full channel) and the sink flush run after the permit is released. Source and map outputs are write-ahead: logged (`ItemEmitted` / `StepSucceeded{outputs}`) first, then delivered downstream.
 
 **Steps.** `StepStarted` → call `fn` → `StepSucceeded{outputs}` or `StepFailed`. A step is *committed* only when its
