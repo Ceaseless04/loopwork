@@ -32,7 +32,8 @@ packages/engine/
   src/scheduler.ts      per-node worker pool, global in-flight cap
   src/scope.ts          run-scope wiring, recursive frame execution
   src/guards.ts         runnability guard
-  src/frames.ts         frame-instance runner + retry/backoff primitives (foreach, while/until, retry)
+  src/frames.ts         frame-instance runner + retry/backoff primitives (foreach, retry)
+  src/loops.ts          while/until instance runner (condition, iterations, iteration budget)
   src/recorder.ts       batching event writer (flush by count/time)
   src/resume.ts         derives work to redo from RunState   (slice 3-5)
   test/
