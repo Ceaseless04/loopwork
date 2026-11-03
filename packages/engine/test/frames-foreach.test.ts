@@ -113,7 +113,7 @@ describe('foreach frames', () => {
     expect(inherited.gauge.peak).toBe(3);
   });
 
-  it('frames: foreach bodies are validated recursively (nested while and a body source are rejected as internal)', async () => {
+  it('frames: foreach bodies are validated recursively (a nested while with an unregistered predicate and a body source are rejected as internal)', async () => {
     const nested = foreachFrame({
       concurrency: 1,
       nodes: {
@@ -129,8 +129,8 @@ describe('foreach frames', () => {
       },
     });
     const inner = await exec(frameFlow(nested));
-    expect(inner.outcome).toMatchObject({ status: 'failed', reason: 'internal', message: expect.stringMatching(/F\.b.*frame/i) });
-    expect(inner.outcome).toMatchObject({ message: expect.stringMatching(/slice 4/) });
+    expect(inner.outcome).toMatchObject({ status: 'failed', reason: 'internal', message: expect.stringMatching(/"F\.b"/) });
+    expect(inner.outcome).toMatchObject({ message: expect.stringMatching(/unknown predicate "go"/) });
     expect(inner.events.map((e) => e.type)).toEqual(['RunCreated', 'RunStarted', 'RunFailed']);
 
     const sourced = foreachFrame({

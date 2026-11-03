@@ -74,7 +74,7 @@ type Body = { nodes: Record<string, FlowNode>; edges: Edge[]; entry: PortRef; ex
 
 type Frame =
   | { kind: 'frame'; frame: 'foreach'; body: Body; budgets: Budgets; concurrency: number; in: PortSpec; out: PortSpec }
-  | { kind: 'frame'; frame: 'while' | 'until'; body: Body; budgets: Budgets; condition: string /* fn */; in: PortSpec; out: PortSpec }
+  | { kind: 'frame'; frame: 'while' | 'until'; body: Body; budgets: Budgets; condition: string /* fn */; conditionParams?: JsonValue /* the predicate's params, like `params` on a node */; in: PortSpec; out: PortSpec }
   | { kind: 'frame'; frame: 'retry'; body: Body; budgets: Budgets; maxAttempts: number;
       backoff: { kind: 'fixed' | 'exponential'; baseMs: number }; onExhausted: 'fail-run' | 'emit-error'; in: PortSpec; out: PortSpec };
 ```

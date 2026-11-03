@@ -243,7 +243,7 @@ type BudgetsS = { maxIterations: number; maxDurationMs: number; maxCostUsd?: num
 type BodyS = { nodes: Record<string, FlowNodeS>; edges: EdgeS[]; entry: PortRefS; exit: PortRefS };
 type FrameS =
   | { kind: 'frame'; frame: 'foreach'; body: BodyS; budgets: BudgetsS; concurrency: number; in: PortSpecS; out: PortSpecS }
-  | { kind: 'frame'; frame: 'while' | 'until'; body: BodyS; budgets: BudgetsS; condition: string; in: PortSpecS; out: PortSpecS }
+  | { kind: 'frame'; frame: 'while' | 'until'; body: BodyS; budgets: BudgetsS; condition: string; conditionParams?: JsonValueS; in: PortSpecS; out: PortSpecS }
   | { kind: 'frame'; frame: 'retry'; body: BodyS; budgets: BudgetsS; maxAttempts: number;
       backoff: { kind: 'fixed' | 'exponential'; baseMs: number }; onExhausted: 'fail-run' | 'emit-error'; in: PortSpecS; out: PortSpecS };
 

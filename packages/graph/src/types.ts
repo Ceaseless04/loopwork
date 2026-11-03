@@ -29,7 +29,7 @@ export type Body = { nodes: Record<string, FlowNode>; edges: Edge[]; entry: Port
 
 export type Frame =
   | { kind: 'frame'; frame: 'foreach'; body: Body; budgets: Budgets; concurrency: number; in: PortSpec; out: PortSpec }
-  | { kind: 'frame'; frame: 'while' | 'until'; body: Body; budgets: Budgets; condition: string; in: PortSpec; out: PortSpec }
+  | { kind: 'frame'; frame: 'while' | 'until'; body: Body; budgets: Budgets; condition: string; conditionParams?: JsonValue; in: PortSpec; out: PortSpec }
   | {
       kind: 'frame';
       frame: 'retry';
