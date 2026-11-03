@@ -4,6 +4,7 @@ import { createChannel, type Channel } from './channel.js';
 import type { Recorder } from './recorder.js';
 import type { Item, NodeKind, NodeRegistry, StepContext } from './registry.js';
 import { backoffMs, runInstance, sleep, type Instance, type RetryScope } from './frames.js';
+import { runLoopInstance } from './loops.js';
 import { chain, createLimiter, runHeld, runPool, type Limiter } from './scheduler.js';
 
 /** Run-wide state shared by every scope: one abort signal, recorder, global limiter and channel set. */
@@ -206,20 +207,22 @@ export function createRunScope(env: ScopeEnv): (o: ScopeOpts) => Scope {
             handle: (item) => runStep(item, 1),
           }).then(() => releaseOutputs(sid)),
         );
-      } else if (n.frame === 'foreach' || n.frame === 'retry') {
-        const concurrency = n.frame === 'foreach' ? n.concurrency : 1; // retry instances run one at a time
-        // foreach: run-wide limiter shared by the outer frame's instances; retry: one per pool, so each outer instance gets its own.
+      } else {
+        const concurrency = n.frame === 'foreach' ? n.concurrency : 1; // retry, while and until instances run one at a time
+        // foreach: run-wide limiter shared by the outer frame's instances; the others: one per pool, so each outer instance gets its own.
         const frameLimiter = n.frame === 'foreach' ? nodeLimiterOf(sid, concurrency) : createLimiter(concurrency);
         const instances = new Map<string, Instance>();
         const entryPort = `${sid}.${n.body.entry.node}.${n.body.entry.port}`;
-        const bodyDefault = n.frame === 'foreach' ? concurrency : defaultConcurrency; // a retry's body inherits its parent's
-        const runBody = async (inst: Instance): Promise<void> => {
+        const bodyDefault = n.frame === 'foreach' ? concurrency : defaultConcurrency; // any other body inherits its parent's
+        /** Runs the body once on `entry` (default: the instance's item); with `collect` its exit items are gathered instead of sent on `out`. */
+        const runBody = async (inst: Instance, entry: Item = { itemId: inst.itemId, value: inst.value }, collect?: Item[]): Promise<void> => {
           if (signal.aborted) return;
           const bodyRetry: RetryScope | undefined =
             n.frame === 'retry'
               ? {
                   maxAttempts: n.maxAttempts,
                   backoff: n.backoff,
+                  exhausted: () => inst.exhausted !== undefined,
                   ...(n.onExhausted === 'emit-error' && { exhaust: (message: string) => void (inst.exhausted ??= { message }) }),
                 }
               : retry;
@@ -230,22 +233,38 @@ export function createRunScope(env: ScopeEnv): (o: ScopeOpts) => Scope {
             entry: entryPort,
             ...(bodyDefault !== undefined && { defaultConcurrency: bodyDefault }),
             ...(bodyRetry && { retry: bodyRetry }),
-            exit: { port: `${sid}.${n.body.exit.node}.${n.body.exit.port}`, send: (it) => sendTo(`${sid}.out`, it) },
+            exit: { port: `${sid}.${n.body.exit.node}.${n.body.exit.port}`, send: async (it) => (collect ? void collect.push(it) : sendTo(`${sid}.out`, it)) },
           });
           try {
-            await sub.enter(entryPort, { itemId: inst.itemId, value: inst.value });
+            await sub.enter(entryPort, entry);
             await Promise.all(sub.work);
           } finally {
             sub.dispose();
           }
         };
+        const host = { rec, emit, signal, fail: env.fail, send: (port: string, it: Item) => sendTo(`${sid}.${port}`, it) };
+        const loop =
+          n.frame === 'while' || n.frame === 'until'
+            ? {
+                node: n,
+                ops: {
+                  runId,
+                  test: fnOf('predicate', n.condition),
+                  iterate: (inst: Instance, e: Item) => {
+                    const out: Item[] = [];
+                    return runBody(inst, e, out).then(() => out);
+                  },
+                  abandoned: () => retry?.exhausted() ?? false,
+                },
+              }
+            : undefined;
         work.push(
           runPool({
             input: input$,
             concurrency,
             limiter: frameLimiter, // the instance holds only the frame's permit, never a global one
             signal,
-            handle: (item) => runInstance({ rec, emit, signal, fail: env.fail, send: (port, it) => sendTo(`${sid}.${port}`, it) }, { id: sid, node: n, instances }, item, runBody),
+            handle: (item) => (loop ? runLoopInstance(host, { id: sid, node: loop.node, instances }, item, loop.ops) : runInstance(host, { id: sid, node: n, instances }, item, runBody)),
           }).then(() => releaseOutputs(sid)),
         );
       }

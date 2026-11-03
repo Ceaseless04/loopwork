@@ -2,12 +2,12 @@ import type { RunState } from '@loopwork/eventlog';
 import type { Flow, FlowNode } from '@loopwork/graph';
 import type { NodeRegistry } from './registry.js';
 
-/** First node (walking frame bodies; ids are scoped like `F.b`) this slice cannot run. Only `foreach` and `retry` frames run; bodies hold no sources. */
+/** First node (walking frame bodies; ids are scoped like `F.b`) this slice cannot run: unknown fns, unregistered while/until predicates, sources in frame bodies. */
 function badNode(nodes: Record<string, FlowNode>, prefix: string, registry: NodeRegistry): string | undefined {
   for (const [id, n] of Object.entries(nodes)) {
     const sid = `${prefix}${id}`;
     if (n.kind === 'frame') {
-      if (n.frame !== 'foreach' && n.frame !== 'retry') return `node "${sid}" is a ${n.frame} frame; those land in engine-core slice 4`;
+      if ((n.frame === 'while' || n.frame === 'until') && !registry.has('predicate', n.condition)) return `node "${sid}": unknown predicate "${n.condition}"`;
       const bad = badNode(n.body.nodes, `${sid}.`, registry);
       if (bad !== undefined) return bad;
     } else if (prefix !== '' && n.kind === 'source') {

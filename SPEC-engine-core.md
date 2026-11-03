@@ -32,9 +32,10 @@ packages/engine/
   src/scheduler.ts      per-node worker pool, global in-flight cap
   src/scope.ts          run-scope wiring, recursive frame execution
   src/guards.ts         runnability guard
-  src/frames.ts         frame-instance runner + retry/backoff primitives (while/until: slice 4)
+  src/frames.ts         frame-instance runner + retry/backoff primitives (foreach, retry)
+  src/loops.ts          while/until instance runner (condition, iterations, iteration budget)
   src/recorder.ts       batching event writer (flush by count/time)
-  src/resume.ts         derives work to redo from RunState   (slice 3-5)
+  src/resume.ts         derives work to redo from RunState   (slice 5)
   test/
 ```
 
@@ -97,6 +98,11 @@ A step's `fn` holds the global `maxInFlight` permit; outbound sends (which may b
 while it is true, `until` runs the body until it is true (condition checked **after** each iteration for `until`,
 **before** for `while`); the body's `out` item becomes the next state. Emits the final state on `out`, exit
 `condition`. Iteration counts against `maxIterations`. Iteration n's body entry item id is `${instanceItemId}>${frame}.iter#${n}`. The final state is logged as `FrameExited.outputs` on `out` (including for a `while` that ran zero iterations).
+
+- `condition` names a registered predicate; the frame's `conditionParams` (if any) is its `params`. A predicate has no `now`/`random`, so re-evaluating it from the logged state on resume is deterministic and logs nothing. A predicate that throws fails the run `failed{reason:'step'}` with the frame's id as `node`.
+- Each iteration runs the body in a fresh scope fed one item (the current state). The body must emit **exactly one** item on its exit; any other count (a filtering or fan-out body) fails the run `failed{reason:'step'}` naming the frame. Exception: if an enclosing `retry` frame (`emit-error`) is exhausted before an iteration starts or while it runs, the instance is abandoned so fold drops it. It is checked before every iteration (including the first), and no further iteration starts: exhausted before one starts, the instance logs only `FrameExited{retries-exhausted}` with no outputs (no `IterationStarted`/`IterationEnded`); exhausted while it runs, `IterationEnded` precedes that `FrameExited`.
+- `maxIterations` is checked before starting iteration n: if n would exceed it (a `while` still true, an `until` still false after `maxIterations` iterations), append `BudgetExceeded{budget:'iterations', limit:maxIterations, used:maxIterations}` and end the run `failed{reason:'budget'}`. A condition that is satisfied exactly after iteration `maxIterations` is not a breach. `maxDurationMs` spans the whole instance across iterations, as for other frames. `IterationEnded.elapsedMs` of a loop covers the time since the previous mark (instance entry, or the previous `IterationEnded`), so predicate time between iterations is included and the sum over an instance approximates its wall time up to its last completed iteration; predicate time after the last `IterationEnded` (the final condition check) is not logged.
+- Iterations of one instance run strictly one after another; instances of the same frame run one at a time per pool (as `retry`). Body nodes without their own `concurrency` inherit the enclosing foreach's, as elsewhere.
 
 **Retry.** Run `body` on the item; on step failure retry up to `maxAttempts` total with `backoff`
 (`fixed`: `baseMs`; `exponential`: `baseMs * 2^(attempt-1)`, capped at 60 s). Success exits `success`. A retry re-runs the failed step with `attempt + 1`; committed body steps are not re-run. `attempt` counts executions, including ones interrupted by a crash, and `maxAttempts` bounds it. On

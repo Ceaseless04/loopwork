@@ -164,7 +164,7 @@ describe('executeRun', () => {
   });
 
   describe('internal guards', () => {
-    it('a frame node fails the run as internal', async () => {
+    it('a while frame with an unregistered predicate fails the run as internal, naming the node and predicate', async () => {
       const wf = flow('f', 'F')
         .frame('loop', {
           kind: 'frame',
@@ -179,7 +179,7 @@ describe('executeRun', () => {
       const { outcome, events } = await run(wf);
 
       expect(outcome).toMatchObject({ status: 'failed', reason: 'internal' });
-      expect(outcome.status === 'failed' && outcome.message).toMatch(/frame/i);
+      expect(outcome.status === 'failed' && outcome.message).toMatch(/"loop".*unknown predicate "go"/);
       expect(events.at(-1)).toMatchObject({ type: 'RunFailed', reason: 'internal' });
     });
 

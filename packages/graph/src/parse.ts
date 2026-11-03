@@ -19,7 +19,7 @@ import type { Flow, JsonValue, ParseResult, ValidationError } from './types.js';
  * Everything else is STRUCTURAL and its absence is E_SHAPE (reported at the path the field would have): version (=== 1),
  * id, name, nodes, edges; per node `kind`, `fn` (source/map/sink), `in`/`out` (the ports the kind has), `frame`, `body`,
  * `budgets` (an object, possibly empty); per body nodes, edges, entry, exit; per PortRef node and port (strings); per
- * retry `backoff` (an object with a `kind` literal) and `onExhausted`. `params` is optional JSON.
+ * retry `backoff` (an object with a `kind` literal) and `onExhausted`. `params` and (on while/until) `conditionParams` are optional JSON.
  *
  * CLOSED KEY SETS (an object may hold these keys and no others):
  *   flow:      version id name nodes edges            edge:    from to              PortRef: node port
@@ -27,7 +27,7 @@ import type { Flow, JsonValue, ParseResult, ValidationError } from './types.js';
  *   backoff:   kind baseMs
  *   source:    kind fn params out                     map:     kind fn params in out concurrency
  *   sink:      kind fn params in concurrency
- *   frames:    kind frame body budgets in out, plus foreach: concurrency; while/until: condition;
+ *   frames:    kind frame body budgets in out, plus foreach: concurrency; while/until: condition conditionParams;
  *              retry: maxAttempts backoff onExhausted
  * UNKNOWN KEYS are E_SHAPE at `<object path>/<key>`, collected beside every other error; their value is never examined.
  * That includes keys of another node kind or frame variant. While the variant is unresolved (node `kind` or `frame`
@@ -37,7 +37,7 @@ import type { Flow, JsonValue, ParseResult, ValidationError } from './types.js';
  * anyOf, enum, inferFrom (inferFrom only directly at a port); a mix is one error at the schema, any other key that does
  * not belong to the member is an unsupported keyword at that key, `array` needs `items`, `object` needs `properties`,
  * `required` is an array of strings, `additionalProperties` a boolean, anyOf and enum are non-empty, enum members,
- * inferFrom samples and `params` are JSON (plain objects incl. null-prototype, finite numbers, no undefined, functions,
+ * inferFrom samples, `params` and `conditionParams` are JSON (plain objects incl. null-prototype, finite numbers, no undefined, functions,
  * symbols, bigint, Date, Map, class instances, sparse arrays).
  *
  * PLAIN OBJECT: an object whose prototype is null or whose prototype's own prototype is null. That is `{}`, a
@@ -110,10 +110,10 @@ const PLAIN_KEYS = {
 const FRAME_COMMON = ['kind', 'frame', 'body', 'budgets', 'in', 'out'];
 const FRAME_KEYS = {
   foreach: only(...FRAME_COMMON, 'concurrency'),
-  while: only(...FRAME_COMMON, 'condition'),
-  until: only(...FRAME_COMMON, 'condition'),
+  while: only(...FRAME_COMMON, 'condition', 'conditionParams'),
+  until: only(...FRAME_COMMON, 'condition', 'conditionParams'),
   retry: only(...FRAME_COMMON, 'maxAttempts', 'backoff', 'onExhausted'),
-  all: only(...FRAME_COMMON, 'concurrency', 'condition', 'maxAttempts', 'backoff', 'onExhausted'),
+  all: only(...FRAME_COMMON, 'concurrency', 'condition', 'conditionParams', 'maxAttempts', 'backoff', 'onExhausted'),
 };
 const NODE_KEYS = only('fn', 'params', 'concurrency', ...FRAME_KEYS.all);
 const SCHEMA_KEYS = only('type', 'anyOf', 'enum', 'inferFrom', 'items', 'properties', 'required', 'additionalProperties');
@@ -484,7 +484,10 @@ const takeFrame = (at: At): void => {
   takePort(at, 'in');
   takePort(at, 'out');
   if (variant === 'foreach') take(at, 'concurrency', false, isFiniteNumber, 'a finite number');
-  else if (variant === 'while' || variant === 'until') take(at, 'condition', false, isString, 'a string');
+  else if (variant === 'while' || variant === 'until') {
+    take(at, 'condition', false, isString, 'a string');
+    if (f.has('conditionParams')) placeJson(at.c, at.out, 'conditionParams', f.get('conditionParams'), `${at.path}/conditionParams`, at.node);
+  }
   else if (variant === 'retry') {
     take(at, 'maxAttempts', false, isFiniteNumber, 'a finite number');
     take(at, 'onExhausted', true, oneOf('fail-run', 'emit-error'), 'one of fail-run, emit-error');
