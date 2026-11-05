@@ -4,7 +4,7 @@ import { assertAppendAllowed, nextStatus } from './status.js';
 import { InvalidEventError, RunExistsError, SeqConflictError, UnknownRunError } from './store.js';
 import type { EventStore } from './store.js';
 
-type Run = { row: RunRow; events: LoopworkEvent[] };
+type Run = { row: RunRow; events: LoopworkEvent[]; lastAttempt: number }; // lastAttempt: highest RunStarted attempt so far
 
 /** In-process EventStore. Events are JSON, so stored and returned events are structured clones. */
 export class MemoryStore implements EventStore {
@@ -30,7 +30,7 @@ export class MemoryStore implements EventStore {
       updatedAt: ts,
       lastSeq: 1,
     };
-    this.runs.set(runId, { row, events: [structuredClone({ ...first, runId, seq: 1, ts })] });
+    this.runs.set(runId, { row, events: [structuredClone({ ...first, runId, seq: 1, ts })], lastAttempt: 0 });
     this.wake();
   }
 
@@ -43,14 +43,14 @@ export class MemoryStore implements EventStore {
     if (opts.expectedSeq !== run.row.lastSeq) {
       throw new SeqConflictError(`expected seq ${opts.expectedSeq}, run is at ${run.row.lastSeq}`);
     }
-    const lastAttempt = run.events.reduce((m, e) => (e.type === 'RunStarted' ? Math.max(m, e.attempt) : m), 0);
-    assertAppendAllowed(run.row.status, lastAttempt, events);
+    assertAppendAllowed(run.row.status, run.lastAttempt, events);
 
     const ts = this.now().toISOString();
     let seq = run.row.lastSeq;
     for (const e of events) {
       run.events.push(structuredClone({ ...e, runId, seq: ++seq, ts }));
       run.row.status = nextStatus(run.row.status, e);
+      if (e.type === 'RunStarted') run.lastAttempt = Math.max(run.lastAttempt, e.attempt);
     }
     run.row.lastSeq = seq;
     run.row.updatedAt = ts;
