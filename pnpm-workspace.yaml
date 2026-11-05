@@ -3,6 +3,8 @@ packages:
   - "apps/*"
   - "integrations/*"
   - "tests/*"
+overrides:
+  minimatch@10.2.6: 11.0.1
 # pnpm 12 hoists nothing by default; @types/node arrives transitively via @types/pg/vitest and is required for types:["node"].
 publicHoistPattern:
   - "@types/node"
